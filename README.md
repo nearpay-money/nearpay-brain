@@ -16,7 +16,7 @@ The single source of truth for **NearPay** (`nearpay.money`) — non-custodial, 
 | 6 | [architecture/api-conventions.md](architecture/api-conventions.md) | Public API, idempotency, versioning, webhooks, test mode |
 | 7 | [architecture/security.md](architecture/security.md) | Trust boundaries, keys, threats T-01…T-16 |
 | 8 | [architecture/infrastructure.md](architecture/infrastructure.md) | netcup sites, k3s platform, HA/DR, delivery, observability |
-| 9 | [architecture/repositories.md](architecture/repositories.md) | The 27 repos, dependency rules, directory structures |
+| 9 | [architecture/repositories.md](architecture/repositories.md) | The 26 repos, dependency rules, directory structures |
 | 10 | [decisions/](decisions/README.md) | ADR-0001…0014 |
 | 11 | [quality/stress-test.md](quality/stress-test.md) · [capacity.md](quality/capacity.md) · [risks.md](quality/risks.md) | How the design was attacked, sized and what risk remains |
 | 12 | [operations/slos.md](operations/slos.md) · [runbooks.md](operations/runbooks.md) | Running it |

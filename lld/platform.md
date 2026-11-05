@@ -41,7 +41,7 @@ compose/
 | `sandbox-api` | nearpay-sandbox | internal, data | postgres |
 | `sentinel-api`, `sentinel-auditor` | nearpay-sentinel | internal, data, egress | postgres, nats |
 | `migrate-<svc>` (one-shot) | each service image, `dist/main.js migrate` with the migrator URL | data | postgres-init (completed) |
-| `static` | `nginxinc/nginx-unprivileged:1.29.8-alpine` behind Traefik; sites mounted read-only from the checkout, js, dashboard, console, docs `dist/` (placeholder page until built) | edge | — |
+| `static` | `nginxinc/nginx-unprivileged:1.29.8-alpine` behind Traefik; sites mounted read-only from the checkout, js, dashboard and console `dist/` and `nearpay-site/dist/docs` (placeholder page until built) | edge | — |
 | `mailpit` (local) | `axllent/mailpit:v1.27.11` | internal | — |
 | `registry` (local) | `verdaccio/verdaccio:6.10.6` | edge (+ host port `127.0.0.1:4873`) | — | local npm registry for `@nearpay/*` and `@nearpay-internal/*` packages so sibling repos consume **published artifacts** (ADR-0001) without a remote; GitHub Packages / npm replace it when remotes exist |
 | `merchant-demo` (local) | nearpay-testbed `merchant-demo` (port 3000) | demo (static IP `NP_DEMO_IP`; the egress proxy allows exactly this private address, webhooks L-WH-02) | payments-api |

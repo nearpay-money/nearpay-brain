@@ -1,4 +1,4 @@
-# LLD — SDKs and tools (`nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-docs`, `nearpay-web`)
+# LLD — SDKs and tools (`nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site`)
 
 > Version 1.1 (audited, `audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
 
@@ -24,11 +24,13 @@
 
 Commands: `login` (device code via dashboard session → restricted test key stored in OS keychain), `listen --forward-to http://localhost:3000/webhooks` (consumes `GET /v1/events/stream`, re-signs with a local secret printed at start), `trigger <scenario>` (creates a test session and advances the sandbox), `events list|resend`, `logs tail`. Distributed via npm (`@nearpay/cli`) and single-file binaries (`bun build --compile`).
 
-## 4. `nearpay-docs` (Stage 2; Stage 1 = READMEs)
+## 4. `nearpay-site` — docs (Stage 2; Stage 1 = READMEs)
+
+One Astro project (ADR-0019) builds both public sites: `dist/docs` → `docs.<domain>`, `dist/web` → apex domain.
 
 Astro Starlight site: guides (quickstart, checkout, webhooks, test mode, refunds, agents/x402, settlement destinations), API reference rendered from `nearpay-spec/openapi/public.yaml`, error pages generated from the error catalogue, webhook IP list, changelog. Built statically; deployed with the stack.
 
-## 5. `nearpay-web` (Stage 5)
+## 5. `nearpay-site` — marketing (Stage 5)
 
 Astro static marketing site at `nearpay.money`: product, pricing (from fee schedule doc), legal pages (terms incl. 1Click flow-down provisions, privacy), status link.
 

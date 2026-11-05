@@ -1,6 +1,6 @@
 # Repository Topology
 
-> Version 1.1 (`nearpay-kit` has ten packages: `bus` and `http` split out in step 1.1) · Decision: ADR-0001 (polyrepo by bounded context, contract-first). GitHub org: `nearpay-money`. All repos are siblings under one parent folder so relative links like `../nearpay-brain` work locally.
+> Version 1.2 (`nearpay-docs` and `nearpay-web` merged into `nearpay-site`, ADR-0019; 26 repos) · Version 1.1: `nearpay-kit` has ten packages · Decision: ADR-0001 (polyrepo by bounded context, contract-first). GitHub org: `nearpay-money`. All repos are siblings under one parent folder so relative links like `../nearpay-brain` work locally.
 
 ## 1. Why this split (first principles)
 
@@ -83,15 +83,14 @@ flowchart TB
 | 15 | `nearpay-js` | Frontends | library + static | js.nearpay.money/v1/nearpay.js · npm: @nearpay/js, @nearpay/react | Stage 1 (step 1.3) |
 | 16 | `nearpay-dashboard` | Frontends | static SPA | dashboard.nearpay.money | Stage 1 (step 1.3) |
 | 17 | `nearpay-console` | Frontends | static SPA (internal) | ops.nearpay.money behind Cloudflare Access | Stage 2 (step 2.3) |
-| 18 | `nearpay-docs` | Frontends | static site | docs.nearpay.money | Stage 2 (step 2.3) |
-| 19 | `nearpay-web` | Frontends | static site | nearpay.money | Stage 5 (step 5.2) |
-| 20 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | Stage 1 (step 1.3) |
-| 21 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | Stage 1 (step 1.3) |
-| 22 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | Stage 3 (step 3.3) |
-| 23 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: v1.vault.nearpay.near (immutable) | Stage 4 (step 4.1) |
-| 24 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | Stage 5 (step 5.1) |
-| 25 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | Stage 1 (step 1.1) |
-| 26 | `nearpay-testbed` | Platform | tests | CI + scheduled jobs | Stage 1 (steps 1.3–1.5) |
+| 18 | `nearpay-site` | Frontends | static site | docs.nearpay.money (docs) + nearpay.money (marketing, legal) | Stage 2 (step 2.3) |
+| 19 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | Stage 1 (step 1.3) |
+| 20 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | Stage 1 (step 1.3) |
+| 21 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | Stage 3 (step 3.3) |
+| 22 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: v1.vault.nearpay.near (immutable) | Stage 4 (step 4.1) |
+| 23 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | Stage 5 (step 5.1) |
+| 24 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | Stage 1 (step 1.1) |
+| 25 | `nearpay-testbed` | Platform | tests | CI + scheduled jobs | Stage 1 (steps 1.3–1.5) |
 
 
 ## 5. Directory structures
@@ -598,35 +597,18 @@ nearpay-console/
     └── workflows/
 ```
 
-### nearpay-docs
+### nearpay-site
 
-Public developer documentation: guides, API reference generated from nearpay-spec, webhooks, test mode, agents, error pages.
+Public static sites from one Astro project: developer documentation at `docs.` (guides, API reference generated from nearpay-spec, webhooks, test mode, agents, error pages) and the marketing site at the apex domain (product, pricing, legal pages). Builds to `dist/docs` and `dist/web`.
 
 ```
-nearpay-docs/
-├── content/
-│   ├── agents/
-│   ├── api/
-│   ├── errors/
-│   ├── guides/
-│   ├── test-mode/
-│   └── webhooks/
-├── scripts/
+nearpay-site/
 ├── src/
-└── .github/
-    └── workflows/
-```
-
-### nearpay-web
-
-Marketing site, pricing, legal pages.
-
-```
-nearpay-web/
+│   ├── components/      shared layout and UI
+│   ├── content/docs/    agents, api, errors, guides, test-mode, webhooks
+│   └── pages/           marketing and legal pages
 ├── public/
-├── src/
-│   ├── components/
-│   └── pages/
+├── scripts/             API reference + error pages from nearpay-spec
 └── .github/
     └── workflows/
 ```
