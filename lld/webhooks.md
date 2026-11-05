@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.0 · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -91,7 +91,7 @@ tx: inbox.consume(evt.id); m = mapping(evt.subject) or ack-skip
 **Dispatch** (`webhooks-dispatcher`):
 ```
 loop: due = select … where status in (pending, failed) and next_attempt_at <= now() order by next_attempt_at limit 100 for update skip locked
-  per-endpoint concurrency ≤ 5 (Valkey semaphore 'wh:<ep>' with 30 s TTL)
+  per-endpoint concurrency ≤ 5 (Valkey semaphore 'wh:<ep>' with 30 s TTL; Valkey down → 1 in flight per endpoint per dispatcher replica)
   body = JSON(render(event, endpoint.api_version)); t = now_unix
   sig = 't='+t+',v1='+hex(hmac(secret, t+'.'+body))[+',v1='+secondary]+',v1a='+b64url(ed25519(t+'.'+body))+',kid='+kid
   POST url via egress proxy (timeout 10 s, no redirects) headers: Content-Type, User-Agent 'NearPay-Webhooks/1.0',
@@ -109,7 +109,7 @@ Produced: `evt.webhooks.endpoint.disabled` (notify). Consumed: see §4 (+ `evt.i
 
 ## 8. Egress and SSRF
 
-All deliveries use the `egress-proxy` container (Smokescreen): deny RFC 1918, loopback, link-local, CGNAT, multicast, IPv6 ULA/link-local and cloud metadata ranges; ports 80/443 only; DNS resolved by the proxy at connect time (no rebinding); `localhost`/`*.localhost` allowed only when `NP_ENV=local` and the endpoint is test mode (lets the demo merchant receive webhooks locally).
+All deliveries use the `egress-proxy` container (Smokescreen): deny RFC 1918, loopback, link-local, CGNAT, multicast, IPv6 ULA/link-local and cloud metadata ranges; ports 80/443 only; DNS resolved by the proxy at connect time (no rebinding); `localhost`/`*.localhost` and the Compose host `merchant-demo` are allowed only when `NP_ENV=local` (lets the demo merchant receive webhooks locally); never on the server stage.
 
 ## 9. Configuration
 
