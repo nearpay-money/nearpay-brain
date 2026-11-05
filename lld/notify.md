@@ -1,6 +1,6 @@
 # LLD — `nearpay-notify`
 
-> Version 1.0 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/notify.md`) · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -8,7 +8,7 @@
 
 ## 2. Runtime
 
-`notify-worker` (`worker`, 1 replica): consumers, internal API (`/internal/messages`), send queue (jobs table), outbox relay. Local profile uses **Mailpit** (SMTP sink + web UI at `mail.nearpay.localhost`); server stage uses Postmark (primary) and Amazon SES (fallback).
+`notify-api` (`api`, 2 replicas): internal API `/internal/messages` (login magic links depend on it). `notify-worker` (`worker`, 1 replica): consumers, send queue (jobs table), outbox relay. Local profile uses **Mailpit** (SMTP sink + web UI at `mail.nearpay.localhost`); server stage uses Postmark (primary) and Amazon SES (fallback).
 
 ## 3. Data
 
