@@ -1,6 +1,6 @@
 # Public API and Webhook Conventions
 
-> Version 1.0 · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
+> Version 1.1 (list filters instead of search endpoints, ADR-0018) · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
 
 ## 1. Surfaces
 
@@ -18,7 +18,7 @@
 - Every object has `id`, `object`, `created` (unix seconds), `livemode`, `metadata` (≤ 50 keys, key ≤ 40 chars, value ≤ 500 chars).
 - Actions are sub-resources: `POST /v1/payment_intents/{id}/cancel`, `POST /v1/invoices/{id}/finalize`.
 - `expand[]` for one-level expansion of referenced objects.
-- Lists: `GET /v1/{resource}?limit=1..100&starting_after=&ending_before=` → `{object: "list", data, has_more}`. Search endpoints (`/search?query=`) for dashboard-grade filtering.
+- Lists: `GET /v1/{resource}?limit=1..100&starting_after=&ending_before=` → `{object: "list", data, has_more, url}`, newest first. Filtering uses typed query parameters on the list itself — `field=value`, ranges `field[gte|gt|lte|lt]=`, value lists `field[]=`, `metadata[key]=value` — declared per route in `nearpay-spec`; there are no search endpoints or query language (ADR-0018).
 
 ## 3. Money fields
 

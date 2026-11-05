@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.1 (OQ-T-01, OQ-T-02 from step 1.1) · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.2 (OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05) · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -26,8 +26,12 @@
 
 | ID | Question | Default until answered | Resolve by |
 |---|---|---|---|
-| **OQ-T-01** | Query grammar of `GET /v1/payment_intents/search` (api-conventions §2 "search endpoints") | Stage 1 dashboards use the list endpoint with `status` and `created[gte/lte]` filters | Stage 2 dashboard filtering |
-| **OQ-T-02** | Request/response shapes of ops HTTP routes for compliance cases, blocklist edits and sentinel findings | Stage 1 runs these use cases in-process via the ops CLI (no network path); the spec carries the ops routes whose shapes the LLDs define (KYB decision, kill switch) | Stage 2 console |
+| **OQ-T-01** | ~~Query grammar of `GET /v1/payment_intents/search`~~ | **Decided:** no search endpoints; typed filters on list endpoints (ADR-0018) | Closed 2026-11-05 |
+| **OQ-T-02** | ~~Request/response shapes of ops HTTP routes for compliance cases, blocklist edits and sentinel findings~~ | **Decided:** specified together with the Stage 2 console, their first network consumer; Stage 1 keeps these actions in the in-process ops CLI with no network path | Closed 2026-11-05 |
+
+**OQ-T-01 write-up.** The owner chose typed list filters over a Stripe-style query language: one validated mechanism, no parser, each filter backed by a deliberate index. `GET /v1/payment_intents` adds `amount`, `currency`, `asset_id` and `metadata[key]` filters in Stage 2; `/search` is removed from the conventions and the payments LLD.
+
+**OQ-T-02 write-up.** The owner chose to shape these endpoints with the Stage 2 console screens rather than guess them now. Stage 1 operators use `nearpay-testbed/ops` (in-container CLI). The KYB decision and kill-switch endpoints stay in the spec as already specified.
 
 ## Business
 
