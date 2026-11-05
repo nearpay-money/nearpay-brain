@@ -1,0 +1,18 @@
+# Runbook Index
+
+> Version 1.0 · Each runbook gets its own page under `operations/runbooks/` as it is first exercised; this index fixes triggers and first actions so on-call (human or agent-assisted) never starts from zero. Agents may *propose* runbook actions; humans execute anything touching production state.
+
+| ID | Trigger | First actions | Exit |
+|---|---|---|---|
+| **RB-01 Upstream rail degraded** | 1Click quote error rate > 5% or status errors > 10% (5 min) | Confirm via canary + Explorer; set status page "Upstream degraded"; enable `rails.cross_chain = paused` if quotes fail > 50%; keep Intents-native path on; notify partner contact | Error rates normal 30 min; unpause; post-incident note |
+| **RB-02 Site failover NUE → VIE** | NUE unreachable/unwritable > 10 min, or DC incident | Fence NUE (stop CNPG primary, revoke Postgres WireGuard peer); promote VIE replica cluster; scale VIE services; verify `/healthz/deep` green → LB shifts; restart outbox relays; trackers resume from cursor − 30 min | Writes healthy in VIE; NUE rebuilt as replica; fail back in a window |
+| **RB-03 Sentinel mismatch** | Sentinel refuses to co-sign due to recipient/asset mismatch | Global quoting kill switch on; freeze destination changes; snapshot affected attempts; compare identity registry vs payments snapshot vs 1Click; security incident process | Root cause fixed; second reviewer sign-off; kill switch off |
+| **RB-04 Verifier holds spike** | Hold rate > 1% (15 min) | Identify chain/route; check RPC pool health and provider tx hashes; pause Tier-B routes; manually verify top holds by value | Holds resolved with evidence or refunds confirmed |
+| **RB-05 Reconciliation diff** | Daily diff ≠ 0 | Freeze statement for merchant; compare evidence vs statement vs Explorer; classify (missed event, fee drift, real loss) | Diff explained and corrected via `fee_adjustment`/backfill |
+| **RB-06 Destination-change attack suspected** | Spike in destination changes or user reports | Platform-wide destination-change rate limit; force step-up re-auth for affected accounts; contact owners | Accounts secured; cool-offs reviewed |
+| **RB-07 OpenBao sealed** | Seal status alert | Page unseal-key holders (3 of 5); verify running pods unaffected; block deploys | Unsealed; audit log reviewed |
+| **RB-08 Webhook backlog** | Event freshness SLO burning | Check NATS lag, dispatcher saturation, egress proxy; scale dispatcher; per-endpoint concurrency guard | Backlog drained |
+| **RB-09 Relayer allowance low / gas spike** | Allowance < 20% or NEAR gas price spike | Auto top-up within daily ceiling; if exceeded, raise ceiling with approval; reduce batch interval | Allowance healthy |
+| **RB-10 Sanctions hit** | Post-screen hit on a settled payment | Open case; notify merchant; suspend new sessions if merchant involvement suspected; file reports per jurisdiction policy | Case closed with documented decision |
+| **RB-11 Backup/restore drill failure** | Weekly drill fails | Treat as sev-2; investigate WAL archive/base backup; run manual restore | Drill green |
+| **RB-12 Provider-wide loss (netcup)** | Both sites down > 1 h or account suspension | Declare disaster; provision on alternate provider via `nearpay-infra`; restore from S3 (WAL + base); restore OpenBao snapshot; repoint Cloudflare origins | Service restored ≤ 8 h; RPO ≤ 60 s confirmed |
