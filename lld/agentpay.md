@@ -73,7 +73,7 @@ create table quotas (account_id uuid primary key, rps integer not null default 5
 | `POST /x402/settle` | same | same body → `{success, transaction, network, payer, amount?, errorReason?}`; idempotent on payload hash | `settlement_pending` (non-terminal), any verify reason, `unexpected_settle_error` |
 | `GET /v1/agent_payments` · `/{id}` | `agentpay.facilitate` or session | list/get | |
 | `POST /v1/checkout/sessions/{id}/agent_pay` | anonymous + `X-NearPay-Client-Secret` | `{signed}` → `{status:'submitted', attempt}`; agent obtains requirements from `GET …/agent_pay/requirements` | as verify + `session_not_open` |
-| `POST /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | `{payer: <agent Intents account>}` → PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) from payments `POST /internal/checkout_sessions/{id}/agent_attempts` (creates or reuses the attempt) | `session_not_open`, `too_many_attempts`, `destination_not_intents_account` |
+| `POST /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | `{payer: <agent Intents account>}` → PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) + `attempt_id` + `attestation_ticket` from payments `POST /internal/checkout_sessions/{id}/agent_attempts` (creates or reuses the attempt); `@nearpay/agent-signer` verifies a sentinel co-signature before signing (same two-party release as the human checkout) | `session_not_open`, `too_many_attempts`, `destination_not_intents_account` |
 | `POST /internal/relay` | payments (`agentpay.relay`) | `{execution_id, binding, signed}` → `202 {agent_payment_id}` | `intent_invalid`, `insufficient_balance` |
 
 ## 6. Verify algorithm

@@ -160,6 +160,20 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 | **Request token** | identity `/internal/authz` (gateway ForwardAuth) | `iss=nearpay-identity`, `aud=nearpay`, `sub` (principal id), `acct`, `lm`, `ptype` (`secret_key`·`restricted_key`·`publishable_key`·`client_secret`·`session`·`ops`), `scp[]`, `rid` | 60 s | Forwarded as `X-NearPay-Token` to the routed service; services may forward it on calls made *for that request* |
 | **Service token** | identity `/internal/service-tokens` (client credentials: `client_id` + secret file) | `ptype=service`, `sub=<svc>`, `scp[]` (static per service, see each LLD) | 5 min, cached until 30 s before expiry | Background jobs and service-to-service calls not tied to a request |
 
+**Service scope catalogue** (`service_clients.scopes`; a call outside this table is a defect):
+
+| Client | Scopes |
+|---|---|
+| identity | `compliance.screen`, `rails.read`, `notify.send` |
+| payments | `identity.context.read`, `rails.executions.write`, `rails.read`, `agentpay.relay`, `compliance.read`, `sandbox.use` |
+| rails | `compliance.screen`, `sandbox.use` |
+| agentpay | `payments.attempts.create`, `payments.read`, `rails.read`, `identity.context.read`, `compliance.screen`, `sandbox.use` |
+| sentinel | `rails.read`, `sandbox.use` (+ DB role `sentinel_ro`) |
+| billing | `payments.sessions.create`, `payments.read`, `notify.send` |
+| notify | `identity.recipients.read`, `payments.receipts.read`, `billing.read` |
+| compliance, webhooks, sandbox | none outbound |
+| ops principals (`ptype=ops`) | `compliance.kyb.decide`, `compliance.cases.write`, `sentinel.killswitch`, `rails.read`, `payments.read` |
+
 EdDSA (Ed25519) signatures, `kid` header, JWKS at identity `/internal/jwks` (cached 5 min, refetch on unknown `kid`). Every handler calls `requireScope`. Headers: `X-NearPay-Token`, `X-Request-Id`, `traceparent`, `Idempotency-Key`, `NearPay-Version`.
 
 ## 10. HTTP conventions (internal and outbound)

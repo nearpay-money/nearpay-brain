@@ -10,7 +10,7 @@
 | **Checkout availability** | synthetic checkout journeys passing / all (3 regions, every minute) | 99.95% (v1: 99.5%) | 3 consecutive failures in 2 regions |
 | **API latency** | create-session requests < 300 ms / all | 99% | p99 > 300 ms for 15 min |
 | **Live quote latency** | quotes < 4 s / all | 95% | p95 > 4 s for 15 min |
-| **Sentinel co-sign** | co-signatures < 400 ms and non-error / all | 99.9% | error rate > 1% for 5 min |
+| **Sentinel co-sign** | co-signatures < 1.5 s and non-error / all | 99.9% | error rate > 1% for 5 min |
 | **Event freshness** | state change → webhook first attempt < 60 s / all | 99.9% | p99 > 60 s for 10 min |
 | **Settlement detection** | provider SUCCESS (or watcher match) → `payment_intent.succeeded` < 120 s on Tier A / all | 99% | p95 > 120 s for 15 min |
 | **Correctness** | succeeded intents with verified evidence / all succeeded | **100%** | any violation (sev-1) |

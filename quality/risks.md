@@ -22,4 +22,4 @@
 | R-16 | **EU-only hosting latency** for US/Asia payers | M | L | Static checkout on CDN; API latency budget includes +150–250 ms; MNZ/SIN sites later (ADR-0011 revisit) | p95 by country | Platform |
 | R-18 | **v1 single host** — host loss = full outage; weaker same-host isolation between services | M | M | WAL-G off-host (RPO ≤ 60 s), restore runbook (RTO ≤ 4 h), per-service DB roles and secrets, hardened containers; move to ADR-0011 topology after v1 | Host health, restore drill | Platform |
 | R-19 | **Hackathon deadline** (2026-11-14 23:59 UTC) forces scope cuts in Stage 1 | H | M | Stage 1 scoped to checkout + agent pay; every step demoable; cut list pre-agreed in the development plan | Daily burn-down | Founders |
-| R-17 | **Sentinel on the critical path** (fail-closed) reduces availability | L | M | ≥ 2 replicas per site on different nodes; stateless; 400 ms budget; SLO tracked | Co-sign error rate | Security |
+| R-17 | **Sentinel on the critical path** (fail-closed) reduces availability | L | M | ≥ 2 replicas per site on different nodes; stateless; 1.5 s p99 budget; SLO tracked | Co-sign error rate | Security |

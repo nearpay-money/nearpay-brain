@@ -128,7 +128,7 @@ No attacker-controllable input can engage the global kill switch; a compromised 
 
 ## 11. Security
 
-- Fail-closed: no attestation → checkout renders no address (FR-PAY-10). p99 budget 400 ms; 2 replicas on different CPU sets.
+- Fail-closed: no attestation → checkout renders no address (FR-PAY-10). Latency budget p99 1.5 s (dominated by one 1Click status call; cached responses ≤ 50 ms); 2 replicas on different CPU sets.
 - Sentinel never reads payments/rails databases and never accepts their claims as truth.
 - Key rotation: deploy new key with new `kid` → release checkout pinning both → switch signing → remove old after all open attestations expire.
 

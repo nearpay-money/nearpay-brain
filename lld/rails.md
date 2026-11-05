@@ -178,6 +178,7 @@ req: {idempotency_key, kind, method, account_id, livemode, origin:{asset_id, cha
      referral:'nearpay', appFees: bps>0 ? [{recipient: TREASURY, fee: bps}] : [], quoteWaitingTimeMs: 3000,
      depositMode: profile(origin).memo_mode=='required' ? 'MEMO' : 'SIMPLE'}
 9. res = provider.quote(quoteReq) (6 s); 400 → quote_rejected(res.message); 401/5xx/timeout → rail_unavailable (breaker)
+    any failure from step 7 onwards releases the allocated tag (same transaction as the failure record)
 10. integrity: res.quoteRequest ⊇ quoteReq on {recipient, destinationAsset, amount, refundTo, appFees, originAsset};
     EXACT_OUTPUT → res.quote.amountOut == amount; depositAddress valid for origin chain; quote.deadline ≥ now + min;
     verifyQuoteSignature(res) (SDK) → any failure → quote_integrity_failed + alert, tag released

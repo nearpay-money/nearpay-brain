@@ -38,6 +38,7 @@ compose/
 | `migrate-<svc>` (one-shot) | each service image `migrate` | data | postgres |
 | `static` (Traefik file provider) | volumes from checkout, js, dashboard, console, docs builds | edge | — |
 | `mailpit` (local) | `axllent/mailpit` | internal | — |
+| `registry` (local) | Verdaccio | internal (+ host port 4873) | — | local npm registry for `@nearpay/*` and `@nearpay-internal/*` packages so sibling repos consume **published artifacts** (ADR-0001) without a remote; GitHub Packages / npm replace it when remotes exist |
 | `merchant-demo` (local) | nearpay-testbed `merchant-demo` | internal (reachable by `egress-proxy` under the local-only allowance, webhooks L-WH-02) | payments-api |
 
 **Networks:** `edge` (traefik, static), `internal` (all services; no internet), `data` (postgres, nats, valkey + their clients), `egress` (only containers that call the internet). Containers not on `egress` cannot reach the internet.
@@ -53,6 +54,7 @@ compose/
 | `api.…/v1/webhook_endpoints`, `/v1/events`, `/v1/webhook_signing_keys` | webhooks-api | authz |
 | `api.…/x402`, `/v1/agent_payments`, `/v1/checkout/sessions/{id}/agent_pay*` (priority over payments) | agentpay-api | authz |
 | `api.…/v1/attestations` | sentinel-api | authz (anonymous allowed) + IP rate limit |
+| `api.…/webhooks/email` (Stage 5) | notify-api | authz (anonymous allowed; provider signature verified by notify) |
 | `api.…/v1/assets` | rails-api | authz (anonymous allowed) |
 | `pay.…`, `js.…`, `dashboard.…` (+ `/api/*` → api routes with prefix strip), `ops.…`, `docs.…` | static | security headers per site |
 
@@ -83,7 +85,9 @@ contract-tests/             # consumer-driven tests across services from spec fi
 load/                       # k6: sessions/attempts, webhook fan-out, x402 settle
 chaos/                      # kill containers, block egress, stall NATS; assert money-safety invariants
 canary/                     # mainnet canary runner (budget-capped, human-started)
-ops/                        # Stage 1 ops CLI: kyb-decide, kill-switch-release, destination-cooloff-skip (local only)
+ops/                        # Stage 1 ops CLI (local only): wrappers around `docker compose exec <svc> node dist/ops.js <cmd>` —
+                            # kyb-decide, kill-switch-release, destination-cooloff-skip; no network auth path exists for them;
+                            # Stage 2 replaces them with the console (ops principals, two-person rules)
 fixtures/oneclick|near/     # recorded provider responses and mainnet receipts (SP-14)
 ```
 

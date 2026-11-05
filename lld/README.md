@@ -1,6 +1,6 @@
 # Low-Level Design (LLD)
 
-> Status: see table · Owner: Principal Engineer · Baseline: HLD v1.1, ADR-0001…0016.
+> Status: **dev-ready** — all component audits and the system audit (`audits/system.md`) pass · Owner: Principal Engineer · Baseline: HLD v1.1, ADR-0001…0016.
 
 An LLD is **dev-ready** when an engineer (human or AI agent) can implement the component without making a design decision: every table, endpoint, event, state transition, job, timeout, config key and test case is named. Anything not decided is an explicit open item linked to a spike.
 
@@ -8,23 +8,23 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 
 | LLD | Component(s) | Audit | Status |
 |---|---|---|---|
-| [00-foundations.md](00-foundations.md) | Cross-cutting: `nearpay-spec`, `nearpay-kit`, conventions every service follows | [audit](audits/00-foundations.md) | see audit |
-| [identity.md](identity.md) | `nearpay-identity` | [audit](audits/identity.md) | see audit |
-| [payments.md](payments.md) | `nearpay-payments` | [audit](audits/payments.md) | see audit |
-| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | see audit |
-| [sentinel.md](sentinel.md) | `nearpay-sentinel` | [audit](audits/sentinel.md) | see audit |
-| [agentpay.md](agentpay.md) | `nearpay-agentpay` | [audit](audits/agentpay.md) | see audit |
-| [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | see audit |
-| [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | see audit |
-| [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | see audit |
-| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | see audit |
-| [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | see audit |
-| [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | see audit |
-| [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | see audit |
-| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | see audit |
-| [sdks-and-tools.md](sdks-and-tools.md) | `nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-docs`, `nearpay-web` | [audit](audits/sdks-and-tools.md) | see audit |
-| [platform.md](platform.md) | `nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` (entry) | [audit](audits/platform.md) | see audit |
-| — | Whole system | [audits/system.md](audits/system.md) | see audit |
+| [00-foundations.md](00-foundations.md) | Cross-cutting: `nearpay-spec`, `nearpay-kit`, conventions every service follows | [audit](audits/00-foundations.md) | dev-ready (v1.1) |
+| [identity.md](identity.md) | `nearpay-identity` | [audit](audits/identity.md) | dev-ready (v1.1) |
+| [payments.md](payments.md) | `nearpay-payments` | [audit](audits/payments.md) | dev-ready (v1.1) |
+| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | dev-ready (v1.1) |
+| [sentinel.md](sentinel.md) | `nearpay-sentinel` | [audit](audits/sentinel.md) | dev-ready (v1.1) |
+| [agentpay.md](agentpay.md) | `nearpay-agentpay` | [audit](audits/agentpay.md) | dev-ready (v1.1) |
+| [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | dev-ready (v1.1) |
+| [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | dev-ready (v1.1) |
+| [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.1) |
+| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.1) |
+| [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.1) |
+| [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.1) |
+| [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.1) |
+| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.1) |
+| [sdks-and-tools.md](sdks-and-tools.md) | `nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-docs`, `nearpay-web` | [audit](audits/sdks-and-tools.md) | dev-ready (v1.1) |
+| [platform.md](platform.md) | `nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` (entry) | [audit](audits/platform.md) | dev-ready (v1.1) |
+| — | Whole system | [audits/system.md](audits/system.md) | dev-ready (v1.1) |
 
 ## Section template (every component LLD)
 

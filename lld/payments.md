@@ -218,7 +218,7 @@ The payer API never returns the merchant's raw destination address; it returns t
 | Method & path | Caller (scope) | Purpose |
 |---|---|---|
 | `POST /internal/checkout_sessions` | billing (`payments.sessions.create`) | hosted invoice sessions (`source='invoice'`, `invoice_id`, `expires_at` = invoice void date or +30 d) |
-| `GET /internal/payment_intents/{id}` | billing, agentpay, webhooks (`payments.read`) | full object |
+| `GET /internal/payment_intents/{id}` | billing, agentpay (`payments.read`) | full object |
 | `POST /internal/checkout_sessions/{id}/agent_attempts` | agentpay (`payments.attempts.create`) | `{payer_wallet}` → creates (or reuses the caller's still-valid, non-expired) `intents_transfer` attempt and returns `{attempt_id, execution_id, account_id, livemode, intents_requirement}`; same guards as §8.2 (limits apply per session) |
 | `GET /internal/payment_intents/{id}/receipt-context` | notify (`payments.receipts.read`) | `{customer_email, merchant_display_name, amount, currency, settled, asset, evidence_links}` (PII; never in events) |
 | `GET /internal/customers/{id}` | billing (`payments.read`) | customer incl. decrypted email for invoicing |
@@ -228,18 +228,17 @@ The payer API never returns the merchant's raw destination address; it returns t
 
 | Produced | Payload object |
 |---|---|
-| `evt.payments.checkout_session.created` · `.completed` · `.expired` | session |
+| `evt.payments.checkout_session.completed` · `.expired` | session |
 | `evt.payments.payment_intent.created` · `.processing` · `.succeeded` · `.payment_failed` · `.requires_review` · `.overpaid` · `.canceled` · `.expired` | intent (+ attempts) |
-| `evt.payments.payment_attempt.updated` | attempt (internal; consumed by compliance for post-screen, by sentinel for audit sampling) |
 | `evt.payments.refund.created` · `.requires_action` · `.pending` · `.succeeded` · `.failed` · `.canceled` | refund |
-| `evt.payments.balance_transaction.created` | statement line |
-| `evt.payments.payment_link.*`, `evt.payments.customer.*` | object |
+Payment-link, customer and statement-line changes emit no events in v1 (no consumer; readable via API).
 
 | Consumed | Handler |
 |---|---|
 | `evt.rails.execution.updated` / `.settled` / `.refunded` / `.failed` / `.held` | `applyExecutionUpdate` (version-checked) |
 | `evt.identity.account.updated`, `evt.identity.settlement_destination.*` | refresh `settlement_contexts` |
 | `evt.compliance.review.opened` (subject = payment) | set intent `metadata.review` flag + event for dashboard (no state change; payment stands) |
+| `evt.compliance.policy.updated` | refresh cached geo policy (`GET /internal/geo-policy`) |
 
 ## 8. Algorithms
 

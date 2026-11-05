@@ -8,7 +8,7 @@ Deterministic simulator for test mode, local development and E2E: a **1Click-com
 
 ## 2. Runtime
 
-`sandbox-api` (1 replica, own DB `sandbox`). Exposed only on the `internal` network; test helpers reach it through payments.
+`sandbox-api` (1 replica, own DB `sandbox`). Exposed only on the `internal` network; every call requires a service token with `sandbox.use` (payments, rails, agentpay, sentinel); test helpers reach it through payments.
 
 ## 3. Endpoints
 

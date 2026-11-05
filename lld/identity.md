@@ -269,7 +269,7 @@ Query account + fee schedule + active destinations (+ defaults) for `(account, l
 
 ## 11. Configuration
 
-`NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
+`NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file; v1 list: `POST /v1/auth/{signup,magic_links/verify,passkeys/*,recovery}`, `GET|POST /v1/checkout/sessions/{id}/public/**`, `POST /v1/checkout/sessions/{id}/agent_pay/**`, `GET|POST /v1/payment_links/{id}/public/**`, `GET /v1/invoices/{id}/public`, `POST /v1/attestations/deposit_instructions`, `GET /v1/attestations/keys`, `GET /v1/assets`, `GET /x402/supported`, `GET /v1/webhook_signing_keys`, `POST /webhooks/kyb/{vendor}`, `POST /webhooks/email/{provider}` — every other route requires a credential), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
 
 ## 12. Security
 
