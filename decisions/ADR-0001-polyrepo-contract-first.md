@@ -6,7 +6,7 @@
 The product owner does not want a monorepo for everything. Development is led by AI coding agents that work best in small, self-describing codebases. A payments platform has hard security boundaries (on-chain code, deposit-address display, production access, independent auditing) that benefit from separate review and credentials.
 
 ## Decision
-1. One repo per bounded context / deployable / publishable unit / security boundary (26 repos, `architecture/repositories.md`).
+1. One repo per bounded context / deployable / publishable unit / security boundary (26 repos at acceptance; 27 after ADR-0016 added the `nearpay` entry repo — see `architecture/repositories.md`).
 2. `nearpay-spec` is the single source of truth for all contracts; types and validators are generated and published; no hand-written contract types elsewhere.
 3. Repos depend only on published artifacts at pinned versions.
 4. `nearpay-brain` holds all cross-cutting documentation; repos carry only `README.md`, `AGENTS.md`, `CODEOWNERS`.

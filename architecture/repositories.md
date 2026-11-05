@@ -66,32 +66,32 @@ flowchart TB
 | # | Repo | Group | Kind | Ships as | Phase |
 |---|---|---|---|---|---|
 | 0 | `nearpay-brain` | Knowledge | docs | — | always |
-| 1 | `nearpay` | Entry | guide | github.com/nearpay-money/nearpay (hackathon projectUrl) | P0 Foundations |
-| 2 | `nearpay-spec` | Contracts & shared | spec | npm: @nearpay/spec (public), @nearpay-internal/spec (private) | P0 Foundations |
-| 3 | `nearpay-kit` | Contracts & shared | library | npm (private): @nearpay-internal/{money,ids,service,db,auth,intents,chains,testing} | P0 Foundations |
-| 4 | `nearpay-identity` | Services | service | image: ghcr.io/nearpay-money/identity · routes /v1/account, /v1/settlement_destinations, /v1/api_keys, /authz | P0 Foundations |
-| 5 | `nearpay-payments` | Services | service | image: ghcr.io/nearpay-money/payments · routes /v1/checkout, /v1/payment_intents, /v1/refunds, /v1/payment_links, /v1/customers, /v1/balance_transactions | P1 Core payments |
-| 6 | `nearpay-billing` | Services | service | image: ghcr.io/nearpay-money/billing · routes /v1/products, /v1/prices, /v1/invoices, /v1/subscriptions, /v1/mandates | P2 Refunds, billing, agents |
-| 7 | `nearpay-rails` | Services | service | image: ghcr.io/nearpay-money/rails · routes /v1/assets; internal /executions, /quotes | P1 Core payments |
-| 8 | `nearpay-agentpay` | Services | service | image: ghcr.io/nearpay-money/agentpay · routes /x402/*, /v1/checkout/sessions/{id}/agent_pay | P2 Refunds, billing, agents |
-| 9 | `nearpay-compliance` | Services | service | image: ghcr.io/nearpay-money/compliance · internal only | P1 Core payments |
-| 10 | `nearpay-webhooks` | Services | service | image: ghcr.io/nearpay-money/webhooks · routes /v1/events, /v1/webhook_endpoints, /v1/webhook_signing_keys | P1 Core payments |
-| 11 | `nearpay-notify` | Services | service | image: ghcr.io/nearpay-money/notify · internal only | P1 Core payments |
-| 12 | `nearpay-sandbox` | Services | service | image: ghcr.io/nearpay-money/sandbox · internal only (test-mode rail) | P0 Foundations |
-| 13 | `nearpay-sentinel` | Services | service | image: ghcr.io/nearpay-money/sentinel · route /v1/attestations/deposit_instructions; separate credentials | P1 Core payments |
-| 14 | `nearpay-checkout` | Frontends | static SPA | pay.nearpay.money | P1 Core payments |
-| 15 | `nearpay-js` | Frontends | library + static | js.nearpay.money/v1/nearpay.js · npm: @nearpay/js, @nearpay/react | P1 Core payments |
-| 16 | `nearpay-dashboard` | Frontends | static SPA | dashboard.nearpay.money | P1 Core payments |
-| 17 | `nearpay-console` | Frontends | static SPA (internal) | ops.nearpay.money behind Cloudflare Access | P1 Core payments |
-| 18 | `nearpay-docs` | Frontends | static site | docs.nearpay.money | P1 Core payments |
-| 19 | `nearpay-web` | Frontends | static site | nearpay.money | P1 Core payments |
-| 20 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | P1 Core payments |
-| 21 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | P2 Refunds, billing, agents |
-| 22 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | P3 Auto-debit and hardening |
-| 23 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: v1.vault.nearpay.near (immutable) | P3 Auto-debit and hardening |
-| 24 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | P0 Foundations |
-| 25 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | P0 Foundations |
-| 26 | `nearpay-testbed` | Platform | tests | CI + scheduled jobs | P0 Foundations |
+| 1 | `nearpay` | Entry | guide | github.com/nearpay-money/nearpay (hackathon projectUrl) | Stage 1 (step 1.1) |
+| 2 | `nearpay-spec` | Contracts & shared | spec | npm: @nearpay/spec (public), @nearpay-internal/spec (private) | Stage 1 (step 1.1) |
+| 3 | `nearpay-kit` | Contracts & shared | library | npm (private): @nearpay-internal/{money,ids,service,db,auth,intents,chains,testing} | Stage 1 (step 1.1) |
+| 4 | `nearpay-identity` | Services | service | image: ghcr.io/nearpay-money/identity · routes /v1/account, /v1/settlement_destinations, /v1/api_keys, /authz | Stage 1 (step 1.2) |
+| 5 | `nearpay-payments` | Services | service | image: ghcr.io/nearpay-money/payments · routes /v1/checkout, /v1/payment_intents, /v1/refunds, /v1/payment_links, /v1/customers, /v1/balance_transactions | Stage 1 (step 1.2) |
+| 6 | `nearpay-billing` | Services | service | image: ghcr.io/nearpay-money/billing · routes /v1/products, /v1/prices, /v1/invoices, /v1/subscriptions, /v1/mandates | Stage 3 (step 3.2) |
+| 7 | `nearpay-rails` | Services | service | image: ghcr.io/nearpay-money/rails · routes /v1/assets; internal /executions, /quotes | Stage 1 (step 1.2) |
+| 8 | `nearpay-agentpay` | Services | service | image: ghcr.io/nearpay-money/agentpay · routes /x402/*, /v1/checkout/sessions/{id}/agent_pay | Stage 1 (step 1.2) |
+| 9 | `nearpay-compliance` | Services | service | image: ghcr.io/nearpay-money/compliance · internal only | Stage 1 (step 1.2) |
+| 10 | `nearpay-webhooks` | Services | service | image: ghcr.io/nearpay-money/webhooks · routes /v1/events, /v1/webhook_endpoints, /v1/webhook_signing_keys | Stage 1 (step 1.2) |
+| 11 | `nearpay-notify` | Services | service | image: ghcr.io/nearpay-money/notify · internal only | Stage 1 (step 1.2) |
+| 12 | `nearpay-sandbox` | Services | service | image: ghcr.io/nearpay-money/sandbox · internal only (test-mode rail) | Stage 1 (step 1.2) |
+| 13 | `nearpay-sentinel` | Services | service | image: ghcr.io/nearpay-money/sentinel · route /v1/attestations/deposit_instructions; separate credentials | Stage 1 (step 1.2) |
+| 14 | `nearpay-checkout` | Frontends | static SPA | pay.nearpay.money | Stage 1 (step 1.3) |
+| 15 | `nearpay-js` | Frontends | library + static | js.nearpay.money/v1/nearpay.js · npm: @nearpay/js, @nearpay/react | Stage 1 (step 1.3) |
+| 16 | `nearpay-dashboard` | Frontends | static SPA | dashboard.nearpay.money | Stage 1 (step 1.3) |
+| 17 | `nearpay-console` | Frontends | static SPA (internal) | ops.nearpay.money behind Cloudflare Access | Stage 2 (step 2.3) |
+| 18 | `nearpay-docs` | Frontends | static site | docs.nearpay.money | Stage 2 (step 2.3) |
+| 19 | `nearpay-web` | Frontends | static site | nearpay.money | Stage 5 (step 5.2) |
+| 20 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | Stage 1 (step 1.3) |
+| 21 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | Stage 1 (step 1.3) |
+| 22 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | Stage 3 (step 3.3) |
+| 23 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: v1.vault.nearpay.near (immutable) | Stage 4 (step 4.1) |
+| 24 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | Stage 5 (step 5.1) |
+| 25 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | Stage 1 (step 1.1) |
+| 26 | `nearpay-testbed` | Platform | tests | CI + scheduled jobs | Stage 1 (steps 1.3–1.5) |
 
 
 ## 5. Directory structures
@@ -127,14 +127,12 @@ nearpay/
 
 ### nearpay-spec
 
-Single source of truth for every contract: public REST (OpenAPI 3.1), internal service APIs, domain events (AsyncAPI), webhook payloads, error catalogue, NearPay x402 scheme.
+Single source of truth for every contract, authored as zod schemas in TypeScript and emitted as OpenAPI 3.1 / AsyncAPI / JSON Schema: public REST, internal service APIs, domain events, webhook payloads, error catalogue, NearPay x402 scheme, shared test vectors.
 
 ```
 nearpay-spec/
 ├── asyncapi/
-│   └── events/
 ├── codegen/
-├── errors/
 ├── openapi/
 │   ├── internal/
 │   └── public/
@@ -142,10 +140,17 @@ nearpay-spec/
 │   ├── spec-internal/
 │   └── spec-public/
 ├── schemas/
+├── src/
+│   ├── common/
+│   ├── errors/
+│   ├── events/
+│   ├── internal/
+│   ├── public/
 │   ├── webhooks/
 │   └── x402/
 ├── test/
 │   └── compat/
+├── test-vectors/
 └── .github/
     └── workflows/
 ```
@@ -755,7 +760,7 @@ nearpay-deploy/
 
 ### nearpay-testbed
 
-Whole-system verification: local compose stack, cross-service E2E, consumer-driven contract tests, load tests (k6), chaos scenarios, mainnet canary runner, recorded provider fixtures.
+Whole-system verification and demos: merchant-demo app, demo scripts (checkout, agent), Stage 1 ops CLI, cross-service E2E, consumer-driven contract tests, load tests (k6), chaos scenarios, mainnet canary runner, recorded provider fixtures.
 
 ```
 nearpay-testbed/
@@ -763,14 +768,18 @@ nearpay-testbed/
 ├── chaos/
 ├── compose/
 ├── contract-tests/
+├── demo/
 ├── e2e/
 │   ├── agent/
 │   ├── api/
 │   ├── checkout/
 │   └── dashboard/
 ├── fixtures/
+│   ├── near/
 │   └── oneclick/
 ├── load/
+├── merchant-demo/
+├── ops/
 └── .github/
     └── workflows/
 ```
