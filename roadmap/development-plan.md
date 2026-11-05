@@ -1,6 +1,6 @@
 # Development Plan — stages and steps
 
-> Version 1.0 · Baseline: HLD v1.1, LLD set v1.1 (dev-ready), ADR-0015/0016 · Owner: Principal Engineer
+> Version 1.1 (git workflow, ADR-0017) · Baseline: HLD v1.1, LLD set v1.1 (dev-ready), ADR-0015/0016/0017 · Owner: Principal Engineer
 > v1 = Stages 1–4 (local Docker Compose against NEAR mainnet). Stage 5 moves v1 onto one netcup server.
 
 ## 1. Rules for every stage
@@ -9,7 +9,8 @@
 - **Steps are gates.** Inside a step, every listed repo is built **in parallel** (one AI agent or engineer per repo). A step starts only when the previous step's exit criteria pass.
 - **Contract freeze:** the first step of each stage releases `@nearpay/spec` / `@nearpay-internal/spec` (and `nearpay-kit`) at a tagged version to the local registry; repos in later steps of that stage build against that version only. A contract change mid-stage is a change request: spec PR → new patch version → affected repos bump in the same step.
 - **Definition of done per repo:** LLD sections for the stage implemented; unit + property + integration + contract tests green; `AGENTS.md` rules respected; money-path changes reviewed by a human (CODEOWNERS); brain updated in the same change set; commit per finished feature.
-- **Human-only actions** (rules + ADR-0016): providing credentials and accounts, signing mainnet transactions, spending funds, pushing, making repos public, posting, submitting.
+- **Git workflow (ADR-0017):** `main` is the latest build; each step is built on a branch `stage-<n>/<step>-<topic>` from `main` in every repo it touches and joins `main` through a pull request the owner merges. The agent pushes feature branches and opens the pull requests.
+- **Human-only actions** (rules + ADR-0016, amended by ADR-0017): providing credentials and accounts, signing mainnet transactions, spending funds, merging pull requests, the first push of `main` to a new remote, making repos public, posting, submitting.
 
 ## 2. Stage overview
 
