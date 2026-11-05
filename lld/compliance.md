@@ -1,11 +1,11 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.0 · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
 **Owns:** address/account screening (pre and post), screening cache, blocklist, geo policy, KYB cases and vendor integration, compliance cases, destination re-screening, account suspension decisions.
-**Policy is data:** jurisdiction-specific thresholds live in `policies` rows, not code (jurisdiction undecided).
+**Policy is data:** region blocking needs Cloudflare's visitor-location headers (`cf-ipcountry`, `cf-region-code` managed transform) on the server stage; jurisdiction-specific thresholds live in `policies` rows, not code (jurisdiction undecided).
 
 ## 2. Runtime
 
@@ -61,7 +61,7 @@ create table monitored_destinations (destination_id uuid primary key, account_id
 ```
 screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_micros?}):
   norm = normalize(chain, subject)
-  if livemode=false: decision = (subject matches /sanctioned/i or ends with 'dead0000') ? block : allow   // sandbox magic (api-conventions §8)
+  if livemode=false: decision = (subject contains 'sanctioned', case-insensitive) ? block : allow   // sandbox magic (api-conventions §8)
   hit = blocklist(norm) or sanctions_entries(family(chain), norm) → block (reason 'sanctions' | 'blocklist')
   cached = latest screening for (type, chain, norm) with expires_at > now → return (cached=true)
   vendor (Stage 2+): risk API (1 s) → map: severe/high → block, medium → review (treated as allow + case), low → allow
@@ -109,7 +109,7 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 
 ## 8. Configuration
 
-`NP_SANCTIONS_SOURCE_URL` (OFAC SDN advanced XML), `NP_SCREENING_VENDOR` (`none` Stage 1 · `chainalysis` Stage 2), `NP_SCREENING_VENDOR_KEY_FILE`, `NP_KYB_VENDOR` (`manual` Stage 1 · `sumsub` Stage 2), `NP_KYB_VENDOR_SECRET_FILE`, `NP_KYB_WEBHOOK_SECRET_FILE`.
+`NP_SANCTIONS_SOURCE_URL` (OFAC Sanctions List Service, SDN advanced XML — exact URL and digital-currency feature IDs confirmed in SP-15), `NP_SCREENING_VENDOR` (`none` Stage 1 · `chainalysis` Stage 2), `NP_SCREENING_VENDOR_KEY_FILE`, `NP_KYB_VENDOR` (`manual` Stage 1 · `sumsub` Stage 2), `NP_KYB_VENDOR_SECRET_FILE`, `NP_KYB_WEBHOOK_SECRET_FILE`.
 
 ## 9. Security and privacy
 
@@ -127,5 +127,5 @@ Normalisation per chain family; OFAC XML parser on a fixture; fail-closed thresh
 
 | Stage | Scope |
 |---|---|
-| 1 | local OFAC list + blocklist screening, geo policy, manual KYB decision endpoint (ops script), post-screen consumer, cases (API only) |
+| 1 | local OFAC list + blocklist screening, geo policy (country only locally — no geo headers on localhost), manual KYB decision endpoint (ops script), post-screen consumer (Stage 1 has no Explorer `senders`, so post-screening re-checks `refund_to`/payer accounts only), cases (API only) |
 | 2 | vendor screening + KYB vendor (hosted flow, webhooks), console case management, daily destination re-screen |
