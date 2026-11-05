@@ -42,7 +42,9 @@ Recipient resolution (never from event payloads, which carry no PII): identity `
 
 ## 5. API
 
-`POST /internal/messages` (identity, billing; scope `notify.send`): `{template, to, variables, locale?, dedupe_key}` → `202 {message_id}`.
+| Method & path | Caller (scope) | Request → Response |
+|---|---|---|
+| `POST /internal/messages` | identity, billing (`notify.send`) | `{template, to, variables, locale?, dedupe_key}` → `202 {message_id}` |
 
 ## 6. Sending
 
