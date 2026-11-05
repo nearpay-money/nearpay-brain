@@ -1,6 +1,6 @@
 # LLD — `nearpay-checkout` and `nearpay-js`
 
-> Version 1.0 · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -23,7 +23,7 @@ src/features/asset-picker/      options list, balances, route availability
 src/features/wallet-connect/    NEAR Connect, EVM (EIP-6963 injected + WalletConnect), Solana (Stage 4)
 src/features/deposit-instructions/  address, QR, memo, network guard, countdown, "I've sent it"
 src/features/refund-address/    validation per chain, exchange-address warning
-src/features/status-stream/     SSE client with polling fallback
+src/features/status-stream/     fetch-based SSE client (sends the client-secret header; `EventSource` cannot), polling fallback every 3 s
 src/lib/api/                    typed client from @nearpay/spec (public payer routes only)
 src/lib/integrity/              sentinel verification (JCS + Ed25519), fingerprint rendering
 src/wallets/near|evm|solana/    tx builders
@@ -59,7 +59,7 @@ stateDiagram-v2
 ## 5. Critical rules
 
 1. **Client secret** comes from the URL fragment, is kept in memory only, never logged, never stored.
-2. **Two-party release (FR-PAY-10):** after `POST …/attempts`, call `POST /v1/attestations/deposit_instructions` with the attempt's instructions; verify `signature` with a pinned key (`kid` must be pinned), JCS over `attestation`, and assert every displayed field equals the attested field (address, memo, chain, origin asset, amount_in, deadline, pay_to/requirement). Render the **attested** merchant name, KYB badge and destination fingerprint. Any failure → no address, no wallet prompt.
+2. **Two-party release (FR-PAY-10):** after `POST …/attempts`, call `POST /v1/attestations/deposit_instructions` with the attempt's instructions and its `attestation_ticket`; verify `signature` with a pinned key (`kid` must be pinned), JCS over `attestation`, and assert every displayed field equals the attested field (address, memo, chain, origin asset, amount_in, deadline, pay_to/requirement). Render the **attested** merchant name, KYB badge and destination fingerprint. Any failure → no address, no wallet prompt.
 3. **Embedded mode origin check:** the iframe accepts `np:init` only from `event.origin ∈ session.allowed_origins`; also checks `location.ancestorOrigins[0]` when available; mismatch → `blocked`.
 4. **Wallet path builds the transfer inside the iframe:**
    - EVM ERC-20: `transfer(depositAddress, amount_in)` on the token contract; enforce `chainId` switch; native asset: value transfer.
