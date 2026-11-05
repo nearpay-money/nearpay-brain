@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.0 · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -202,11 +202,13 @@ All `POST` honour `Idempotency-Key` (foundations §7).
 |---|---|---|
 | `GET /v1/checkout/sessions/{id}/public` | → `{id, status, amount, currency, display:{merchant_name_unverified, description}, expires_at, settlement:{asset_id, chain, type}, attempt?}` | `client_secret_invalid` |
 | `GET /v1/checkout/sessions/{id}/public/payment_options?chain=&wallet=` | → `{options:[{origin_asset_id, chain, symbol, estimated_amount_in, route_class, min_deadline_s, available}]}` (indicative, from rails) | |
-| `POST /v1/checkout/sessions/{id}/public/attempts` | `{origin_asset_id, refund_to?, payer_wallet?, method: route_quote\|intents_transfer, turnstile_token}` → attempt `{id, status, method, deposit?:{address, memo, amount_in, min_amount_in, deadline, chain}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}}` | `session_not_open`, `attempt_in_flight`, `too_many_attempts`, `route_too_slow`, `refund_address_invalid`, `screening_blocked`, `rail_unavailable`, `turnstile_failed` |
+| `POST /v1/checkout/sessions/{id}/public/attempts` | `{origin_asset_id, refund_to?, payer_wallet?, method: route_quote\|intents_transfer, turnstile_token}` — `route_quote` requires `refund_to` (wallet path: the connected address); `intents_transfer` requires `payer_wallet` (the payer's Intents account; refunds go there) → attempt `{id, status, method, deposit?:{address, memo, amount_in, min_amount_in, deadline, chain}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}, attestation_ticket}` | `session_not_open`, `attempt_in_flight`, `too_many_attempts`, `route_too_slow`, `refund_address_invalid`, `screening_blocked`, `geo_blocked`, `rail_unavailable`, `turnstile_failed` |
 | `POST …/attempts/{pa}/deposit_tx` | `{tx_hash}` → `202` | |
 | `POST …/attempts/{pa}/sent` | → `202` (deposit signal) | |
 | `POST …/attempts/{pa}/signed_intent` | `{signed: MultiPayload}` → `202` (relayed by agentpay) | `intent_invalid`, `insufficient_balance` |
-| `GET …/public/stream` | SSE: `event: session` / `attempt` / `intent` snapshots; heartbeat 15 s; `retry: 3000` | |
+| `GET …/public/stream` | SSE (`text/event-stream`, client secret in header — the SPA uses a fetch-based SSE client because `EventSource` cannot send headers): `event: session` / `attempt` / `intent` snapshots; heartbeat 15 s; `retry: 3000` | |
+| `POST …/attempts/{pa}/simulate_deposit` | **test mode only** → sandbox `POST /sim/deposits` → `202` | `livemode_forbidden` |
+| `POST /v1/test_helpers/payment_attempts/{pa}/advance` (secret test key) | `{to: deposit\|processing\|success\|refund\|fail}` → sandbox `POST /sim/advance` → `202` | `livemode_forbidden` |
 | `GET /v1/payment_links/{id}/public` · `POST …/public/sessions` | → link display / new session `{url}` | `link_inactive` |
 
 The payer API never returns the merchant's raw destination address; it returns the asset/chain only. The co-signed merchant name and destination fingerprint come from sentinel (ADR-0010).
@@ -217,8 +219,9 @@ The payer API never returns the merchant's raw destination address; it returns t
 |---|---|---|
 | `POST /internal/checkout_sessions` | billing (`payments.sessions.create`) | hosted invoice sessions (`source='invoice'`, `invoice_id`, `expires_at` = invoice void date or +30 d) |
 | `GET /internal/payment_intents/{id}` | billing, agentpay, webhooks (`payments.read`) | full object |
-| `GET /internal/checkout_sessions/{id}/agent_requirements` | agentpay (`payments.read`) | `{account_id, livemode, payment_intent_id, pay_to, asset_id, amount, fee, binding, expires_at}` when destination is an Intents account in a payable asset |
-| `POST /internal/checkout_sessions/{id}/agent_attempts` | agentpay (`payments.attempts.create`) | create `intents_transfer` attempt for an agent payload (idempotent on payload hash) |
+| `POST /internal/checkout_sessions/{id}/agent_attempts` | agentpay (`payments.attempts.create`) | `{payer_wallet}` → creates (or reuses the caller's still-valid, non-expired) `intents_transfer` attempt and returns `{attempt_id, execution_id, account_id, livemode, intents_requirement}`; same guards as §8.2 (limits apply per session) |
+| `GET /internal/payment_intents/{id}/receipt-context` | notify (`payments.receipts.read`) | `{customer_email, merchant_display_name, amount, currency, settled, asset, evidence_links}` (PII; never in events) |
+| `GET /internal/customers/{id}` | billing (`payments.read`) | customer incl. decrypted email for invoicing |
 | `GET /internal/reconciliation/{account}/{day}` | ops console | run result |
 
 ## 7. Events
@@ -247,6 +250,7 @@ if lm and not ctx.account.live_enabled → 403 account_not_live
 dest = param ?? ctx.defaults[pricing_asset] ?? ctx.defaults['*'];  dest.status == active else 409 destination_not_active
 min = rails.destinationMinimum(dest) (cached 1 h) → convert to pricing currency with indicative price; amount < min → 422
 if dest.verification == 'unverified' and usd(amount) > cap → 422 amount_above_unverified_cap
+if ui_mode == 'embedded' and allowed_origins empty → 400 allowed_origins_required (https origins; http://localhost:* only in test mode)
 tx: insert intent(requires_payment, snapshots: destination, fee(schedule+bearer), settings) + session(open, secret hash)
     + transitions + outbox(created ×2)
 return session + url = PAY_ORIGIN + '/c/' + cs_id + '#' + client_secret   (fragment never reaches servers)
@@ -255,6 +259,7 @@ return session + url = PAY_ORIGIN + '/c/' + cs_id + '#' + client_secret   (fragm
 ### 8.2 Create attempt (payer)
 ```
 verify client secret; verify Turnstile (skip if Turnstile outage flag → stricter IP limit)
+geo: country = CF-IPCountry (+ cf-region-code) forwarded by the gateway; blocked per cached compliance geo policy → 403 geo_blocked (local: no header → allowed)
 tx1 (lock session+intent FOR UPDATE):
   session.status == open; intent.status in (requires_payment, processing)
   no attempt in (deposit_detected, incomplete_deposit, settling, verifying) → else 409 attempt_in_flight
@@ -268,7 +273,8 @@ exec = rails.createExecution(idem='attempt:'+id, {kind:'payment', method, accoun
   on 4xx → attempt failed(failure_code) + return error;  on timeout → leave quoting (recovery job) + 503 rail_unavailable
 tx2: attempt ← exec (awaiting_deposit, deposit, settlement_amount, tag, fee bps, route_class, price_snapshot, deadline,
      execution_id, execution_version); publish SSE
-return attempt
+ticket = Ed25519(payments_ticket_key, JCS({attempt_id, livemode, deposit_key, exp: now+15 min}))   // rate-gates sentinel (L-SN-03)
+return attempt + attestation_ticket
 ```
 
 ### 8.3 Apply execution update (consumer)
@@ -319,7 +325,7 @@ execution settled → refund succeeded (amount_refunded += amount, pending −= 
 
 ## 11. Configuration
 
-`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE`, `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`.
+`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_TICKET_SIGNING_KEY_FILE` (Ed25519; public key configured in sentinel), `NP_SANDBOX_BASE_URL`, `NP_COMPLIANCE_URL`, `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE`, `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`.
 
 ## 12. Security
 
