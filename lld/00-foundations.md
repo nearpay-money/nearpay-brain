@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.0 · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.1 (audited, `audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -32,6 +32,7 @@ Defines the toolchain, the contract system (`nearpay-spec`), the shared runtime 
 
 ```
 nearpay-spec/
+├── test-vectors/       shared fixtures: JCS+Ed25519 attestations, webhook signatures, NEAR Intents payloads (consumed by producer and consumer tests)
 ├── src/
 │   ├── common/        ids.ts, money.ts, pagination.ts, errors.ts, metadata.ts, enums.ts
 │   ├── public/        <resource>.ts — request/response schemas + route table for /v1
@@ -88,6 +89,7 @@ Kit packages contain **no domain rules** (ADR-0001). Semver; a breaking change b
 
 - In code: `bigint` only. In JSON: fiat `amount` is an integer (`number`, must be ≤ 2^53 − 1, validated); asset amounts are decimal **strings** of base units.
 - Asset identity = NEAR Intents asset ID (`nep141:…`, `nep245:…`). Chain identity = CAIP-2 where it exists (`eip155:8453`, `near:mainnet`, `solana:5eykt4Us…`, `bip122:000000000019d6689c085ae165831e93`), with 1Click's `blockchain` code kept as an attribute.
+- Storage: fiat minor units `bigint`; **asset base units `numeric(78,0)`** (24-decimal tokens exceed `bigint`).
 - Rounding: conversions to the merchant's settlement amount round **down**; fees round **up**; payer-facing totals round **up**. All helpers in `@nearpay-internal/money`.
 
 ## 7. Database conventions
@@ -112,7 +114,7 @@ create table inbox (event_id uuid primary key, subject text not null, received_a
 create table idempotency_keys (
   account_id uuid not null, livemode boolean not null, key text not null,
   request_hash bytea not null, state text not null check (state in ('in_progress','completed')),
-  locked_until timestamptz not null, response_status integer, response_body jsonb,
+  locked_until timestamptz not null, response_status integer, response_body_enc bytea,   -- envelope-encrypted (responses may carry secrets, e.g. client_secret)
   created_at timestamptz not null default now(),
   primary key (account_id, livemode, key));
 create index idempotency_expiry on idempotency_keys (created_at);
@@ -129,7 +131,7 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 ```
 
 - **Idempotency algorithm** (`withIdempotency`): (1) `insert … state='in_progress', locked_until=now()+60s on conflict do nothing`; if a row exists: same hash & completed → replay stored response (`Idempotent-Replayed: true`); same hash & in_progress & `locked_until > now()` → `409 idempotency_in_progress`; same hash & lock expired → take over and re-run; different hash → `409 idempotency_key_reused`. (2) Run the handler; every internal side effect uses a derived deterministic key (`<idempotency-key>:<step>`). (3) Store status + body, `state='completed'`. Keys purged after 24 h by a job.
-- **Jobs** (`jobs` table): workers poll `select … where done_at is null and run_at <= now() and (locked_until is null or locked_until < now()) order by run_at limit $n for update skip locked`; lease 60 s; exponential backoff `min(2^attempts × 5 s, 1 h)` ± 20%; after `max_attempts` → `dead_letters` + alert.
+- **Jobs** (`jobs` table): `dedupe_key` must be prefixed by the job kind (`<kind>:<id>…`). Workers poll `select … where done_at is null and run_at <= now() and (locked_until is null or locked_until < now()) order by run_at limit $n for update skip locked`; lease 60 s; exponential backoff `min(2^attempts × 5 s, 1 h)` ± 20%; after `max_attempts` → `dead_letters` + alert.
 - **Leadership** for singleton loops: `pg_try_advisory_lock(hashtext('<svc>:<loop>'))` on a dedicated connection; lost connection = lost leadership.
 - Retention: `outbox` published rows 7 days; `inbox` 14 days; `idempotency_keys` 24 h; transitions forever (AML window per policy).
 
@@ -145,7 +147,8 @@ create table dead_letters (id uuid primary key, source text not null, subject te
  "trace":{"traceparent":"00-…"}}
 ```
 
-- **Streams:** one per producing domain — `EVT_IDENTITY` (`evt.identity.>`), `EVT_PAYMENTS`, `EVT_BILLING`, `EVT_RAILS`, `EVT_AGENTPAY`, `EVT_COMPLIANCE`, `EVT_SENTINEL`. File storage, limits retention 7 days, duplicate window 120 s (publish with `Nats-Msg-Id = event id`).
+- **Streams:** one per producing domain — `EVT_IDENTITY` (`evt.identity.>`), `EVT_PAYMENTS`, `EVT_BILLING`, `EVT_RAILS`, `EVT_AGENTPAY`, `EVT_COMPLIANCE`, `EVT_SENTINEL`, `EVT_WEBHOOKS`.
+- **No PII in events:** payloads carry IDs and non-personal fields only; consumers needing PII (notify) call the owner's internal API. File storage, limits retention 7 days, duplicate window 120 s (publish with `Nats-Msg-Id = event id`).
 - **Consumers:** durable pull consumers named `<consumer-svc>--<stream>`, explicit filter subjects, `ack_wait 30s`, `max_deliver 20`, backoff `[1s,5s,30s,2m,10m…]`; after max deliver the handler writes `dead_letters` and acks.
 - **Handler contract:** in one DB transaction: `inbox.consume(event.id)` (skip if seen) → load aggregate → ignore if `aggregate.version` ≤ last applied version stored in the read model → apply → commit → ack.
 - **Ordering:** not guaranteed across subjects; consumers rely on `aggregate.version`.
@@ -168,6 +171,8 @@ EdDSA (Ed25519) signatures, `kid` header, JWKS at identity `/internal/jwks` (cac
 | Retries | only idempotent methods or requests with an idempotency key; 3 attempts, 100 ms × 2^n ± 20% |
 | Circuit breaker | open after 50% failures over ≥ 20 calls in 30 s; half-open after 15 s |
 | Pagination | `limit` 1–100 (default 10), `starting_after`/`ending_before` (IDs), stable by `(created_at desc, id desc)` |
+
+State transitions and deadlines use database time (`now()`); containers share the host clock, which must be NTP-synchronised (chrony on the server stage).
 
 Every service listens on `:8080` (HTTP) and exposes `/healthz` (process up), `/readyz` (DB + bus reachable, migrations at expected version), `/metrics` on `:9464`.
 
