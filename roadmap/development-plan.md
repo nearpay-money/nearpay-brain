@@ -49,7 +49,7 @@ flowchart LR
 |---|---|---|
 | 2.1 Contracts | `nearpay-spec`, `nearpay-kit` | refunds, payment links, customers, team, restricted keys, KYB, console routes, reconciliation, Explorer, FX |
 | 2.2 Services | `nearpay-payments`, `nearpay-rails`, `nearpay-identity`, `nearpay-compliance`, `nearpay-webhooks`, `nearpay-notify`, `nearpay-agentpay`, `nearpay-sentinel` | refunds + legs (route + Intents), payment links, customers, review decisions, reconciliation · rails refunds, Explorer feed (owner token), secondary prices + FX (non-par settlement, multi-currency) · identity team, invitations, two-approver rule, restricted keys, recovery · compliance vendor screening + KYB vendor, re-screening · webhooks rotation/resend/delivery API · notify KYB/refund/member templates · agentpay Intents refunds relay · sentinel two-person kill-switch release |
-| 2.3 Clients | `nearpay-dashboard`, `nearpay-console`, `nearpay-checkout`, `nearpay-node`, `nearpay-docs` | refunds with wallet signing, team, KYB, customers, links · console (merchants, KYB, cases, holds, findings, reconciliation) · payment-link route · full node SDK · docs site |
+| 2.3 Clients | `nearpay-dashboard`, `nearpay-console`, `nearpay-checkout`, `nearpay-node`, `nearpay-site` | refunds with wallet signing, team, KYB, customers, links · console (merchants, KYB, cases, holds, findings, reconciliation) · payment-link route · full node SDK · docs site |
 | 2.4 Integration + mainnet demo | `nearpay-testbed` | **Demo:** refund a mainnet payment back to the payer's origin chain (merchant signs in the dashboard); pay a payment link from a different chain; show the daily reconciliation with zero diffs |
 
 ## 5. Stage 3 — Billing and agent commerce
@@ -58,7 +58,7 @@ flowchart LR
 |---|---|---|
 | 3.1 Contracts | `nearpay-spec`, `nearpay-kit` | billing resources and events, hosted invoice, events stream, `near-intents` x402 method |
 | 3.2 Services | `nearpay-billing`, `nearpay-payments`, `nearpay-agentpay`, `nearpay-rails`, `nearpay-webhooks`, `nearpay-notify` | products/prices/tax rates/invoices/subscriptions (`send_invoice`), dunning, PDFs · internal invoice sessions · cross-chain x402 (rails owner `agentpay`) · events SSE stream · billing emails |
-| 3.3 Clients | `nearpay-checkout`, `nearpay-dashboard`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-docs` | hosted invoices · billing pages · MCP server · CLI (`login`, `listen`, `trigger`) · billing + agent guides |
+| 3.3 Clients | `nearpay-checkout`, `nearpay-dashboard`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site` | hosted invoices · billing pages · MCP server · CLI (`login`, `listen`, `trigger`) · billing + agent guides |
 | 3.4 Integration + mainnet demo | `nearpay-testbed` | **Demo:** invoice paid from Solana/EVM into a NEAR destination; subscription renewal invoice issued and paid; an MCP-driven agent pays a checkout session and a cross-chain x402 resource |
 
 ## 6. Stage 4 — Auto-debit and chain coverage (completes v1)
@@ -77,7 +77,7 @@ flowchart LR
 | Step | Repos in parallel | Scope |
 |---|---|---|
 | 5.1 Platform | `nearpay-infra`, `nearpay-deploy` | Ansible host hardening + docker-host + WireGuard admin; Terraform Cloudflare (DNS, proxy, AOP, WAF, Turnstile, Access) + EU object storage; Compose server profile; WAL-G + restore drill; observability on server; GitHub remotes + GHCR/registry switch (owner pushes) |
-| 5.2 Production readiness | `nearpay-notify`, `nearpay-web`, `nearpay-docs`, `nearpay-testbed` | Postmark/SES + bounces; marketing + legal pages; public docs; external status page; canary schedule; load test at P1 peak ×3 on the server |
+| 5.2 Production readiness | `nearpay-notify`, `nearpay-site`, `nearpay-testbed` | Postmark/SES + bounces; marketing + legal pages; public docs; external status page; canary schedule; load test at P1 peak ×3 on the server |
 | 5.3 Security + go-live | all, owner | external pentest (checkout, identity, sentinel), legal opinion for launch jurisdiction (Q-LEG-01), trademark check (Q-BIZ-01), runbook drills RB-01/RB-02/RB-07/RB-11 |
 | 5.4 Launch demo | owner | **Demo:** `https://pay.nearpay.money` live checkout paid on mainnet end to end on the netcup server; hosted agent-payment demo; status page green |
 
@@ -103,8 +103,7 @@ flowchart LR
 | nearpay-agentkit | ● | | ● | ● | |
 | nearpay-node | ● | ● | | | |
 | nearpay-cli | | | ● | | |
-| nearpay-docs | | ● | ● | | ● |
-| nearpay-web | | | | | ● |
+| nearpay-site | | ● | ● | | ● |
 | nearpay-contracts | | | | ● | |
 | nearpay-deploy | ● | ○ | ○ | ○ | ● |
 | nearpay-infra | | | | | ● |
