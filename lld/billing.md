@@ -1,6 +1,6 @@
 # LLD — `nearpay-billing`
 
-> Version 1.0 · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -43,6 +43,7 @@ create table invoices (
   asset_total numeric(78,0),                                     -- when currency = 'asset'
   due_date timestamptz, period_start timestamptz, period_end timestamptz,
   checkout_session_id text, payment_intent_id text, hosted_invoice_url text, pdf_object_key text,
+  invoice_secret_hash bytea,                                     -- hosted URL /i/<in_id>#<invoice_secret>; long-lived, independent of sessions
   mandate_id uuid, collect_period integer,                       -- auto_debit
   finalized_at timestamptz, paid_at timestamptz, voided_at timestamptz, reminders_sent smallint not null default 0,
   metadata jsonb not null default '{}', created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
@@ -89,7 +90,7 @@ Invoice numbers: `<prefix>-<5-digit>` where prefix = first 6 chars of account di
 | `POST /v1/invoices` | `invoices.write` | draft with `lines[{price?|amount+description, quantity, tax_rates?}]`, `customer`, `collection_method='send_invoice'`, `days_until_due` |
 | `POST /v1/invoices/{id}/finalize` · `/send` · `/void` · `/mark_uncollectible` | `invoices.write` | finalize creates the payments session and PDF |
 | `GET /v1/invoices…` | `invoices.read` | |
-| `GET /v1/invoices/{id}/public` | anonymous + invoice secret (= session client secret) | hosted invoice data for the checkout SPA `/i/:id` |
+| `GET /v1/invoices/{id}/public` | anonymous + `X-NearPay-Invoice-Secret` | hosted invoice data for the checkout SPA `/i/:id`; if the invoice is `open` and has no open payments session (expired), creates one via payments `POST /internal/checkout_sessions` and returns `{session_id, client_secret}` so the SPA continues with the normal checkout flow |
 | `POST /v1/subscriptions` | `subscriptions.write` | `{customer, items[{price, quantity}], collection_method, days_until_due?, trial_period_days?, mandate?}` |
 | `POST /v1/subscriptions/{id}` (update) · `/cancel` | `subscriptions.write` | `cancel_at_period_end` or immediate |
 | `POST /v1/mandates/prepare` | `subscriptions.write` | Stage 4: returns `{receiver_id: vault, method:'ft_transfer_call', args:{amount, msg}}` for the payer to sign |
@@ -99,14 +100,14 @@ Invoice numbers: `<prefix>-<5-digit>` where prefix = first 6 chars of account di
 ## 6. Events
 
 Produced: `evt.billing.invoice.{created,finalized,paid,payment_failed,overdue,voided,marked_uncollectible}`, `evt.billing.subscription.{created,updated,deleted,renewal_upcoming}`, `evt.billing.mandate.{activated,collected,insufficient_funds,canceled,exhausted}`.
-Consumed: `evt.payments.payment_intent.succeeded` (source invoice → paid), `evt.payments.checkout_session.expired` (invoice session expired → create a fresh session lazily on next public view), `evt.rails.vault.event` (mandate created/collected/canceled/withdrawn).
+Consumed: `evt.payments.payment_intent.succeeded` (source invoice → paid), `evt.payments.checkout_session.expired` (clear `checkout_session_id`; a fresh session is created lazily on the next public view), `evt.rails.vault.event` (mandate created/collected/canceled/withdrawn). On `mandate_created` billing links the mandate to a subscription only if `ext_ref` = the subscription ID, `merchant_receiver` = an active Intents-account destination of that account, token/amount/period match the subscription's price — otherwise the mandate is recorded as `unlinked` and the payer is told to cancel.
 
 ## 7. Jobs
 
 | Kind (dedupe key) | When | Behaviour |
 |---|---|---|
 | `subscription.renew` (`sub:<id>:<period_start>`) | `current_period_end` | create invoice for next period (draft → finalize); `send_invoice` → payments session + email; `auto_debit` → `mandate.collect`; advance period |
-| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, 30 Tgas); success waits for `vault.event collected` (evidence) → invoice paid; tx failure `insufficient` → invoice switches to `send_invoice` path + `mandate.insufficient_funds` |
+| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, 60 Tgas); success waits for `vault.event collected` (evidence) → invoice paid; tx failure with `ERR_INSUFFICIENT_BALANCE` → invoice switches to `send_invoice` path + `mandate.insufficient_funds`; `ERR_NOT_DUE`/`ERR_IN_FLIGHT` → retry at `next_collect_at`; other errors → retry ×5 then case |
 | `invoice.remind` (`in:<id>:r<n>`) | per `dunning.reminders_days` relative to `due_date` | email; after last → `past_due` handling: `on_exhausted` cancel or `unpaid` |
 | `subscription.renewal_upcoming` | 3 days before period end | event + email |
 
