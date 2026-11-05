@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.0 · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -24,7 +24,7 @@
           "fee":{"to":"treasury.nearpay.near","amount":"25"},"binding":"np1:…","verifyingContract":"intents.near"}}
 ```
 **PaymentPayload.payload:** `{"signed": <MultiPayload>}` (foundations §14) whose message contains exactly two intents, in order: `transfer(receiver_id=payTo, tokens={asset: amount}, memo=binding)` and `transfer(receiver_id=fee.to, tokens={asset: fee.amount}, memo=binding)`; `deadline ≤ issued_at + maxTimeoutSeconds`; `verifying_contract = intents.near`.
-**`binding`** = `np1:` + base58(sha256(JCS({account_id, resource_url, payTo, asset, amount, fee, nonce16, expires_at}))); stored server-side, single use.
+**`binding`** = `np1:` + base58(sha256(JCS({account_id, resource_url, payTo, asset, amount, fee, nonce16, expires_at}))); stored server-side, single use. Requirements are issued **per 402 response** (never cached and shared between clients); issuance is rate-limited per merchant (default 200/s) and expires after `maxTimeoutSeconds`.
 **Settlement response:** `{"success":true,"transaction":"<NEAR tx hash>","network":"near:mainnet","payer":"<signer_id>","amount":"10000"}`.
 
 `exact` + `near-intents` (cross-chain upfront, PR #3370 shape) is Stage 3: `/x402/verify` with `payload.type='quote'` creates a rails execution (owner `agentpay`), `/x402/settle` with `payload.type='deposit'` + `txHash` waits on rails evidence.
@@ -73,7 +73,7 @@ create table quotas (account_id uuid primary key, rps integer not null default 5
 | `POST /x402/settle` | same | same body → `{success, transaction, network, payer, amount?, errorReason?}`; idempotent on payload hash | `settlement_pending` (non-terminal), any verify reason, `unexpected_settle_error` |
 | `GET /v1/agent_payments` · `/{id}` | `agentpay.facilitate` or session | list/get | |
 | `POST /v1/checkout/sessions/{id}/agent_pay` | anonymous + `X-NearPay-Client-Secret` | `{signed}` → `{status:'submitted', attempt}`; agent obtains requirements from `GET …/agent_pay/requirements` | as verify + `session_not_open` |
-| `GET /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) from payments `GET /internal/checkout_sessions/{id}/agent_requirements` | |
+| `POST /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | `{payer: <agent Intents account>}` → PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) from payments `POST /internal/checkout_sessions/{id}/agent_attempts` (creates or reuses the attempt) | `session_not_open`, `too_many_attempts`, `destination_not_intents_account` |
 | `POST /internal/relay` | payments (`agentpay.relay`) | `{execution_id, binding, signed}` → `202 {agent_payment_id}` | `intent_invalid`, `insufficient_balance` |
 
 ## 6. Verify algorithm
@@ -125,7 +125,7 @@ Consumed: `evt.sentinel.kill_switch.engaged` → stop accepting new x402 settles
 
 ## 10. Integrations
 
-NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s), compliance screening (1 s, cached), payments internal (requirements 1 s, agent_attempts 2 s), rails `GET /internal/executions/{id}` (1 s, for relay validation), Valkey (quotas, waiters).
+NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s), compliance screening (1 s, cached), payments internal (`agent_attempts` 8 s — it creates a rails execution), rails `GET /internal/executions/{id}` (1 s, relay validation) and `GET /internal/assets/{id}` (1 s, decimals + price for the minimum fee), identity `GET /internal/accounts/{id}/settlement-context` (1 s, cached 60 s: default Intents destination for `payTo`, fee schedule), Valkey (quotas, waiters).
 
 ## 11. Configuration
 

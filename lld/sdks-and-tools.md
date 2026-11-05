@@ -1,6 +1,6 @@
 # LLD — SDKs and tools (`nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-docs`, `nearpay-web`)
 
-> Version 1.0 · Foundations `00-foundations.md` · API conventions
+> Version 1.1 (audited, `audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
 
 ## 1. `@nearpay/node` (Stage 1 subset, full in Stage 2)
 
@@ -13,7 +13,7 @@
 ## 2. `nearpay-agentkit`
 
 **`@nearpay/x402`** (Stage 1):
-- Server middleware (Express, Hono, Next route handler): `paywall({amount, asset?, description?, maxTimeoutSeconds?}, {secretKey})`. Flow: no `PAYMENT-SIGNATURE` → call `POST /x402/requirements` (cached 30 s per resource+amount) → `402` with `PAYMENT-REQUIRED: base64(PaymentRequired)` and body `{}`. With header → decode → `POST /x402/verify` → invalid → `402` with `PAYMENT-RESPONSE` failure; valid → `POST /x402/settle` → success → call handler, set `PAYMENT-RESPONSE: base64(SettlementResponse)`; `settlement_pending` → one retry after 1 s, then `402` with pending response.
+- Server middleware (Express, Hono, Next route handler): `paywall({amount, asset?, description?, maxTimeoutSeconds?}, {secretKey})`. Flow: no `PAYMENT-SIGNATURE` → call `POST /x402/requirements` (**one call per 402 response, no caching** — bindings are single-use) → `402` with `PAYMENT-REQUIRED: base64(PaymentRequired)` and body `{}`. With header → decode → `POST /x402/verify` → invalid → `402` with `PAYMENT-RESPONSE` failure; valid → `POST /x402/settle` → success → call handler, set `PAYMENT-RESPONSE: base64(SettlementResponse)`; `settlement_pending` → one retry after 1 s, then `402` with pending response.
 - Client: `withX402(fetch, signer, {maxAmountPerRequest, allowedPayTo?})` → on 402 picks the NearPay `intents-transfer` requirement, enforces client-side spend limits, signs via `@nearpay/agent-signer`, retries with `PAYMENT-SIGNATURE`.
 
 **`@nearpay/agent-signer`** (Stage 1): `nearSigner({accountId, keyPair})` (NEP-413), `evmSigner(viemAccount)` (ERC-191), `buildTransferPayment(requirements, signer, {nonceSaltProvider})` → MultiPayload; fetches `current_salt` via RPC (cached 60 s).
@@ -34,4 +34,4 @@ Astro static marketing site at `nearpay.money`: product, pricing (from fee sched
 
 ## 6. Tests
 
-SDK: contract tests against spec fixtures; webhook vectors shared with `nearpay-webhooks`; x402 middleware E2E against sandbox in testbed; agent-signer vectors shared with agentpay.
+SDK: contract tests against spec fixtures; webhook and agent-signer vectors from `nearpay-spec/test-vectors` (same files used by `nearpay-webhooks` and `nearpay-agentpay`); x402 middleware E2E against sandbox in testbed.
