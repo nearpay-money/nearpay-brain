@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.2 (statement API in Stage 1, `/search` deferred; see §16) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.3 (statement API in Stage 1; list filters instead of `/search`, ADR-0018; see §16) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -182,7 +182,7 @@ Client secrets: `cs_…_secret_<32 base62>`; stored as SHA-256; compared constan
 | `GET /v1/checkout/sessions/{id}` · list | `.read` | session (`expand[]=payment_intent`) | |
 | `POST /v1/checkout/sessions/{id}/expire` | `.write` | session | `state_conflict` |
 | `POST /v1/payment_intents` | `payment_intents.write` | same pricing fields, no UI → intent (Stage 2; for custom UIs using `@nearpay/js` attempts) | |
-| `GET /v1/payment_intents/{id}` · list · `/search` (Stage 2: query grammar to be specified, OQ-T-01) | `.read` | intent with `attempts[]`, `overpayments[]` | |
+| `GET /v1/payment_intents/{id}` · list | `.read` | intent with `attempts[]`, `overpayments[]`; list filters `status`, `created[gte/lte]` (Stage 1) plus `amount[gte/lte]`, `currency`, `asset_id`, `metadata[key]` (Stage 2, ADR-0018) | |
 | `POST /v1/payment_intents/{id}/cancel` | `.write` | intent | `state_conflict`, `attempt_in_flight` |
 | `POST /v1/payment_intents/{id}/review` | `.write` | `{decision: accept\|reject}` | `state_conflict` |
 | `POST /v1/refunds` | `refunds.write` | `{payment_intent, amount?, reason?, fee_mode?}` → refund with `next_action` | `amount_exceeds_refundable`, `intent_not_succeeded` |
@@ -359,5 +359,5 @@ execution settled → refund succeeded (amount_refunded += amount, pending −= 
 | Stage | Scope |
 |---|---|
 | 1 | sessions (hosted + embedded), intents, attempts (`route_quote`, `intents_transfer`), application of rails events incl. overpayment/late/review(read-only), statement lines and `GET /v1/balance_transactions`, SSE, test mode, agent requirements/attempts |
-| 2 | refunds (+ legs, dashboard signing), payment links, customers, `POST /v1/payment_intents`, `GET /v1/payment_intents/search`, review accept/reject, reconciliation |
+| 2 | refunds (+ legs, dashboard signing), payment links, customers, `POST /v1/payment_intents`, richer list filters on payment intents (ADR-0018), review accept/reject, reconciliation |
 | 3 | internal invoice sessions for billing |
