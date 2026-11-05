@@ -1,6 +1,6 @@
 # LLD — `nearpay-contracts` / subscription vault
 
-> Version 1.0 · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
+> Version 1.1 (audited, `audits/contracts-vault.md`) · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
 
 ## 1. Scope
 
@@ -30,6 +30,10 @@ Init (once, at deploy): `allowed_tokens` (USDC, USDT on NEAR), `fee_receiver = t
 | views | anyone | `get_mandate`, `get_mandates_by_payer(from, limit)`, `next_collect_at(mandate_id)` |
 
 Collect ordering uses `then` chaining: merchant leg → (on success) fee leg → callback; fee is never sent if the merchant leg fails.
+
+**Error strings (stable, parsed by the keeper):** `ERR_NOT_FOUND`, `ERR_NOT_ACTIVE`, `ERR_NOT_DUE`, `ERR_IN_FLIGHT`, `ERR_INSUFFICIENT_BALANCE`, `ERR_MAX_PERIODS`, `ERR_UNAUTHORIZED`, `ERR_TOKEN_NOT_ALLOWED`, `ERR_BAD_MSG`, `ERR_CAP_EXCEEDED`, `ERR_FEE_TOO_HIGH`, `ERR_NO_STORAGE`.
+
+**Storage:** NEP-145 `storage_deposit` / `storage_balance_of` / `storage_withdraw`; a mandate needs ≥ 0.01 NEAR of the payer's storage balance; `ft_on_transfer` without enough storage returns the full amount (refund) and logs `ERR_NO_STORAGE`; storage is released to the payer on `withdraw` of a closed mandate.
 
 ## 4. Events (NEP-297, `standard: "nearpay_vault"`, `version: "1.0.0"`)
 
