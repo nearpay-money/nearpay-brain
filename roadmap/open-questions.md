@@ -19,13 +19,15 @@
 | **SP-11** | x402 PR #3370 status; upstream appetite for `intents-transfer` | Interop | x402 foundation | P2 |
 | **SP-12** | Self-hosted NEAR RPC node sizing on netcup | RPC independence | Benchmark | P3 |
 | **SP-13** | Amount-tag behaviour per asset (decimals, minimum transfer units, chains that round) | Watcher attribution | Tests per chain | P1 |
+| **SP-14** | Exact DIP-4 `transfer` event and NEP-245 `mt_transfer` log shapes emitted by `intents.near` (incl. `memo`) on mainnet | Indexer attribution by binding/tag | Record mainnet receipts as fixtures | Stage 1 |
+| **SP-15** | OFAC SDN advanced XML source URL and digital-currency feature identifiers | Local sanctions list (compliance Stage 1) | Download + parse fixture | Stage 1 |
 
 ## Business
 
 | ID | Question | Default until answered |
 |---|---|---|
 | **Q-BIZ-01** | Trademark clearance for "NearPay" (name collisions exist) | Keep identifiers domain-derived |
-| **Q-BIZ-02** | Fee schedule by tier/route class (net revenue ≈ half of configured `appFees` on 1Click routes) | 100 bps volatile, 50 bps stable-cross, 20 bps stable-same (all-in) |
+| **Q-BIZ-02** | Fee schedule by tier/route class (net revenue ≈ half of configured `appFees` on 1Click routes) | 100 bps `volatile`, 50 bps `stable_pair`, 20 bps `same_asset`, 30 bps `intents_transfer` with USD 0.001 minimum (all-in) |
 | **Q-BIZ-03** | npm scope `@nearpay` availability | Fallback `@nearpay-money` |
 | **Q-BIZ-04** | Default `fee_bearer` (payer vs merchant) | `payer` |
 

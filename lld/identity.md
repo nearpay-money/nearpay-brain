@@ -1,6 +1,6 @@
 # LLD — `nearpay-identity`
 
-> Version 1.0 · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.1 (audited, `audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
@@ -86,7 +86,7 @@ create index api_keys_account on api_keys (account_id, livemode) where revoked_a
 
 create table fee_schedules (
   id uuid primary key, name text not null unique,
-  rules jsonb not null,   -- [{route_class:'stable_same'|'stable_cross'|'volatile'|'intents_transfer', total_bps:int, min_fee_usd_micros:bigint}]
+  rules jsonb not null,   -- {same_asset|stable_pair|volatile|intents_transfer: {total_bps:int, min_fee_usd_micros:bigint}} (classes defined in rails LLD §8.1)
   provider_split jsonb not null, -- {oneclick:{share_bps:5000, floor_bps:20, stable_floor_bps:1}}
   created_at timestamptz not null default now());
 
@@ -105,7 +105,9 @@ create table settlement_destinations (
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   version integer not null default 0);
 create unique index destinations_unique_live on settlement_destinations (chain, address_norm, asset_id)
-  where status in ('pending_approval','cooling_off','active') and livemode;
+  where status in ('pending_approval','cooling_off','active') and livemode and verification = 'signature';
+-- unverified rows may not share (chain,address,asset) with ANY live non-disabled row of another account (checked in create, under
+-- a transaction-level advisory lock on hashtext(chain||address_norm||asset_id)); sentinel treats residual duplicates as 'ambiguous'
 create index destinations_account on settlement_destinations (account_id, livemode, status);
 
 create table account_default_destinations (
@@ -123,6 +125,9 @@ create table attestation_challenges (
   message text not null, nonce bytea not null, expires_at timestamptz not null, used_at timestamptz);
 
 create table settlement_destination_transitions (… per foundations §7 …);
+
+create table ops_operators (user_id uuid primary key references users(id), role text not null check (role in ('ops','ops_admin')),
+  created_at timestamptz not null default now(), revoked_at timestamptz);   -- console access; passkeys must be hardware-backed (AAGUID allowlist)
 
 create table service_clients (client_id text primary key, secret_hash bytea not null, scopes text[] not null,
   created_at timestamptz not null default now(), revoked_at timestamptz);
@@ -154,7 +159,7 @@ Migration note: `account_default_destinations` uses a generated column `coalesce
 |---|---|---|---|---|
 | — | `create` (session, step-up ≤ 10 min, role owner/admin) | address valid for chain; `recovered_at` older than 48 h; screening `allow` (sync); unique constraint; test mode → skip to `active` with `verification='test'` | `pending_verification` | challenge (10 min), audit, event `created` |
 | `pending_verification` | `attest` | signature valid for message & key controls address (§8.2) | `pending_approval` or `cooling_off` | store attestation |
-| `pending_verification` | `mark_unverified` (owner, step-up) | chain family has no message signing **or** owner opts in | `pending_approval`/`cooling_off` | cap = 1,000 USD per payment |
+| `pending_verification` | `mark_unverified` (owner, step-up) | chain family has no message signing **or** owner opts in; no live non-disabled row of another account has the same `(chain,address,asset)` | `pending_approval`/`cooling_off` | cap = 1,000 USD per payment |
 | `pending_approval` | `approve` (distinct admin/owner, step-up) | approvals ≥ required (`2` if account has ≥ 2 owner/admin members, else `1` = creator) | `cooling_off` | `active_at = now() + 24 h`; notify all owners/admins; job `destination.activate` |
 | `cooling_off` | job `destination.activate` at `active_at` | not disabled; re-screen `allow` | `active` | event `activated`; if first destination for the asset → set default |
 | any non-`disabled` | `disable` (owner/admin, step-up) or `compliance.destination.blocked` | — | `disabled` | if default → unset default; event `disabled`; notify |
@@ -171,7 +176,7 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `POST /v1/auth/magic_links/verify` | anonymous | `{token}` → `{registration_token}` (5 min) | `link_expired`, `link_used` | — |
 | `POST /v1/auth/passkeys/registration/options` · `/verify` | registration_token or session | WebAuthn options / attestation → session cookie (new user: creates account `owner`) | `webauthn_failed` | — |
 | `POST /v1/auth/passkeys/authentication/options` · `/verify` | anonymous | `{email?}` / assertion → session cookie + CSRF token | `webauthn_failed` | — |
-| `POST /v1/auth/step_up/options` · `/verify` | session | assertion → `{step_up_until}` (10 min) | `webauthn_failed` | — |
+| `POST /v1/auth/step_up/options` · `/verify` | session | assertion → `{step_up_until}` (10 min); any step-up-protected endpoint called without a fresh step-up returns `401 step_up_required` | `webauthn_failed` | — |
 | `POST /v1/auth/recovery` | anonymous (Turnstile) | `{email}` → `202`; link → new passkey, sets `accounts.recovered_at` | — | — |
 | `POST /v1/auth/logout` | session | `204` | — | — |
 | `GET /v1/account` · `PATCH /v1/account` | session (PATCH: owner/admin) | account object (settings whitelist) | `invalid_setting` | yes |
@@ -192,6 +197,7 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `POST /internal/service-tokens` | `client_id` + secret (Basic) | `{access_token, expires_in}` | `invalid_client` | — |
 | `GET /internal/accounts/{id}/settlement-context?livemode=` | service (`identity.context.read`) | `{account:{id,status,live_enabled,kyb_status,display_name,verified_legal_name,fee_bearer,settings,api_version}, fee_schedule, destinations:[active…], defaults:{'*':sd_, <asset>:sd_}}` | `resource_missing` | — |
 | `GET /internal/settlement-destinations/{id}` | service | destination (any status) | — | — |
+| `GET /internal/accounts/{id}/notification-recipients?kind=security\|billing\|developer` | notify (`identity.recipients.read`) | `{recipients:[{user_id, email, role}]}` — security: owners+admins; developer: owners+admins+developers; billing: owners+finance | `resource_missing` | — |
 
 **Scopes catalogue (restricted keys):** `checkout_sessions.read|write`, `payment_intents.read|write`, `refunds.read|write`, `payment_links.read|write`, `customers.read|write`, `invoices.read|write`, `subscriptions.read|write`, `products.read|write`, `webhook_endpoints.read|write`, `events.read`, `destinations.read`, `balance_transactions.read`, `agentpay.facilitate`. Secret keys hold all scopes except dashboard-only actions. Publishable keys: `checkout:public`, `elements:public`.
 
@@ -221,8 +227,11 @@ in: Authorization, X-NearPay-Client-Secret, Cookie, X-CSRF-Token, X-Forwarded-Me
    reject if missing|revoked|expired → 401 invalid_api_key; ip_allowlist mismatch → 403
    pk_ keys allowed only on routes tagged publishable
 3. cookie session → load (lru 10 s) → expired/revoked → 401; unsafe method requires X-CSRF-Token == csrf → else 403
+   lm = header 'NearPay-Mode' == 'live' (default test); live requires account.live_enabled for unsafe methods on money routes
+   console host (ops.*) → cookie '__Host-np_ops' and principal must be in ops_operators → ptype 'ops'
 4. account = cache(acct) → status suspended & livemode & unsafe method → 403 account_suspended
 5. rate limit: valkey token bucket key 'rl:'+principal (live 100 rps burst 200; test 25/50; anonymous 10/20 per IP) → 429 + Retry-After
+   client IP = CF-Connecting-IP on the server stage (Cloudflare-only origin), X-Forwarded-For first hop from Traefik locally
    valkey down → per-pod bucket at 50% limits
 6. jwt = sign({sub, acct, lm, ptype, scp, rid}, kid=current, exp=60 s)   // in-memory key
 7. 200 headers: X-NearPay-Token, X-Request-Id (generate if absent); update last_used_at async (batched)
@@ -295,6 +304,6 @@ Metrics: `nearpay_identity_authz_duration_seconds{result}`, `…_authz_cache_hit
 
 | Stage | Scope |
 |---|---|
-| 1 | signup + passkeys, step-up, API keys (secret/publishable), destinations for NEAR/Intents/EVM with attestation, single-approver flow (cool-off configurable to 0 locally, 24 h on server), authz, JWKS, service tokens, settlement context, test-mode destinations |
+| 1 | signup + passkeys, step-up, API keys (secret/publishable), destinations for NEAR/Intents/EVM with attestation, single-approver flow (cool-off configurable to 0 locally, 24 h on server), authz incl. mode header and ops principals, JWKS, service tokens, settlement context, notification recipients, test-mode destinations; live mode gated by the **manual** KYB decision from compliance (ops CLI) |
 | 2 | team members & invitations, two-approver rule, restricted keys, recovery flow, KYB-driven live mode, audit export |
 | 4 | Solana/Bitcoin attestation |

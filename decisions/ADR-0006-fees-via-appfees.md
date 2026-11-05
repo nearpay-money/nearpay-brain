@@ -6,7 +6,7 @@
 Non-custodial means NearPay cannot deduct fees from balances. 1Click `appFees` route a bps fee from the input token to a recipient in-flight. Per docs (Nov 2026), with a partner JWT the configured fee is split 50/50 with 1Click, 1Click's half has a 20 bps floor (1 bp on stable/same-asset routes), total ≤ 500 bps; unauthenticated calls pay an extra 25 bps.
 
 ## Decision
-- Every live quote sets `appFees = [{recipient: treasury.nearpay.near, fee: total_bps}]` from the merchant's **fee schedule** (table keyed by tier × route class: `stable_same`, `stable_cross`, `volatile`), snapshotted on the PaymentIntent.
+- Every live quote sets `appFees = [{recipient: treasury.nearpay.near, fee: total_bps}]` from the merchant's **fee schedule** (table keyed by tier × route class: `same_asset`, `stable_pair`, `volatile`, `intents_transfer` — names aligned with the rails LLD on 2026-11-05; decision unchanged), snapshotted on the PaymentIntent.
 - `fee_bearer` per merchant: `payer` (output = settlement amount) or `merchant` (output reduced by the fee; `domain-model.md` §3).
 - Intents-native payments include a second signed `transfer` to the treasury for the fee amount.
 - Vault `collect` sends the fee share to the treasury on-chain.
