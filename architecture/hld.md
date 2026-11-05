@@ -1,6 +1,6 @@
 # NearPay — High-Level Design (HLD)
 
-> Version **1.0** (stress-tested, see §21 and `quality/stress-test.md`) · Date 2026-11-05 · Owner: Principal Architect
+> Version **1.1** (stress-tested, see §21 and `quality/stress-test.md`; v1 runtime per ADR-0015) · Date 2026-11-05 · Owner: Principal Architect
 > Read first: `product/brief.md`, `product/requirements.md` (invariants **INV-1…9** are referenced throughout).
 
 ---
@@ -91,6 +91,8 @@ flowchart LR
 | [0012](../decisions/ADR-0012-independent-verification.md) | Evidence-before-success with chain verifiers (Tier A/B) |
 | [0013](../decisions/ADR-0013-typescript-rust.md) | TypeScript (Node 22, Fastify) for services/frontends; Rust for NEAR contracts |
 | [0014](../decisions/ADR-0014-auth-gateway.md) | Traefik gateway + ForwardAuth to `identity`; internal short-lived JWTs |
+| [0015](../decisions/ADR-0015-v1-single-host-compose.md) | **v1:** every service its own container in one Docker Compose stack on a single host (local first, netcup last) |
+| [0016](../decisions/ADR-0016-entry-repo-and-hackathon.md) | Thin `nearpay` entry repo; NEAR Hackathon compliance (tracks Real-World Money + Agent Economy) |
 
 ## 5. Container view
 
@@ -206,7 +208,7 @@ Remaining exposure requires compromising `identity` *and* bypassing its attestat
 | **PostgreSQL 17** via CloudNativePG | System of record; one database + role per service | Sync replica in-region (RPO 0); replica cluster in VIE; WAL archive + base backups to off-provider EU S3 (35 d). |
 | **NATS JetStream** | Domain event transport (not a source of truth) | Streams per domain, 7-day retention; rebuildable from outboxes. |
 | **Valkey** | Rate limits, auth cache, SSE fan-out, short-lived locks | Ephemeral; loss = degraded latency only. |
-| **OpenBao** | Secrets, relayer keys, envelope-encryption KEKs | 5-node Raft across NUE(2)/VIE(2)/AMS(1). **Off the request hot path:** signing keys (internal JWT, webhook Ed25519, sentinel) are loaded into memory at start-up and rotated; PII uses envelope encryption with data keys cached ≤ 1 h. A sealed OpenBao stops new pods from starting, not running traffic. |
+| **OpenBao** (post-v1; v1 uses SOPS + Docker secrets, ADR-0015) | Secrets, relayer keys, envelope-encryption KEKs | 5-node Raft across NUE(2)/VIE(2)/AMS(1). **Off the request hot path:** signing keys (internal JWT, webhook Ed25519, sentinel) are loaded into memory at start-up and rotated; PII uses envelope encryption with data keys cached ≤ 1 h. A sealed OpenBao stops new pods from starting, not running traffic. |
 | **Object storage** (off-provider, EU S3) | Backups, exports, invoice PDFs, audit archives | Separate credentials per writer; object lock for audit archive. |
 
 **Money tables** are append-friendly: state is a row with `version`; every transition inserts into `<aggregate>_transitions` (from, to, actor, reason, evidence_ref) in the same transaction as the outbox row (INV-4, INV-9). Provider responses are stored verbatim in `provider_observations` (rails) with hash and receive time.
@@ -287,6 +289,22 @@ Passkeys + step-up; hashed API keys with scopes; destination attestation and coo
 
 ## 15. Deployment and infrastructure (summary — `architecture/infrastructure.md`)
 
+### 15.1 v1 (ADR-0015) — what we build and ship first
+
+| Concern | Target design (post-v1) | **v1 (single host, Docker Compose)** |
+|---|---|---|
+| Hosts | NUE ×3, VIE ×3, AMS witness | Local machine during development; one netcup server (root server recommended) in the final stage |
+| Orchestration | k3s, Argo CD, Rollouts, Kyverno | `docker compose` with profiles (`local`, `server`, `observability`); deploy script in `nearpay-deploy` |
+| Services | 10 services, separate deployables | **Same 10 services, each its own container** (api and worker process types as separate Compose services) |
+| Postgres | CNPG, sync replica, replica cluster | One PostgreSQL 17 container, database + role per service; WAL-G to off-host S3 (RPO ≤ 60 s) |
+| Events | NATS JetStream R3 | NATS JetStream single node (file storage); outbox is the source of truth |
+| Secrets | OpenBao 5-node Raft | SOPS + age → Docker secrets (files); same `secrets` port in code |
+| Network policy | Cilium | One Docker network per concern (`edge`, `internal`, `data`, `egress`); only gateway on `edge`; only egress proxy and rails/agentpay/sentinel/compliance/notify reach the internet |
+| Edge | Cloudflare LB, WAF, Access | Local: Traefik on `*.nearpay.localhost`; server stage: Cloudflare proxy + Authenticated Origin Pulls |
+| Availability | 99.95% | 99.5% (single host); money safety unchanged |
+
+### 15.2 Target topology (post-v1, ADR-0011)
+
 - **Sites:** NUE primary (3 × RS 4000 G12.5), VIE warm standby (3 × RS 4000), AMS witness + observability (VPS). Cloud VLAN in-site, WireGuard between sites.
 - **Platform:** k3s HA (embedded etcd), Cilium (policies + WireGuard encryption), Traefik, CloudNativePG, NATS, Valkey, OpenBao, Argo CD.
 - **Edge:** Cloudflare DNS/WAF/Turnstile/CDN/Load Balancer (health-checked origins; NUE active, VIE standby), Authenticated Origin Pulls; origins accept Cloudflare IPs only.
@@ -318,12 +336,13 @@ Stateless tiers scale horizontally; Postgres is far from its limits at v1 target
 | Sentinel down | Deposit addresses not shown (fail-closed); Intents-native signed payments still work | Cross-chain checkout paused | **Safe by design** |
 | Postgres primary failover in-site (≈ 30 s) | Brief 503s on writes; auth keeps working from cache + replica | Retries with Idempotency-Key succeed | Safe |
 | OpenBao sealed | None for running pods | Deploys/scale-ups blocked until unsealed | Safe |
+| **v1 single host down** | Checkout unavailable until restart/restore (RTO ≤ 4 h on a new host) | API down; no events lost (outbox in Postgres, WAL off-host) | **Safe** |
 
 **Key property:** because NearPay is never in the money path, *any* NearPay outage delays information, never funds.
 
 ## 19. Repository topology (summary — `architecture/repositories.md`)
 
-26 repositories under the `nearpay-money` GitHub org, grouped: **knowledge** (`nearpay-brain`), **contracts & shared** (`nearpay-spec`, `nearpay-kit`), **services** (`nearpay-identity`, `-payments`, `-billing`, `-rails`, `-agentpay`, `-compliance`, `-webhooks`, `-notify`, `-sandbox`, `-sentinel`), **frontends** (`nearpay-checkout`, `-js`, `-dashboard`, `-console`, `-docs`, `-web`), **SDKs & tools** (`nearpay-node`, `-agentkit`, `-cli`), **on-chain** (`nearpay-contracts`), **platform** (`nearpay-infra`, `-deploy`, `-testbed`). Dependency rule: repos depend only on published artifacts (spec packages, kit packages, images), never on each other's source.
+27 repositories under the `nearpay-money` GitHub org, grouped: **entry** (`nearpay` — the hackathon submission URL: guide, repo manifest, bootstrap and run scripts; ADR-0016), **knowledge** (`nearpay-brain`), **contracts & shared** (`nearpay-spec`, `nearpay-kit`), **services** (`nearpay-identity`, `-payments`, `-billing`, `-rails`, `-agentpay`, `-compliance`, `-webhooks`, `-notify`, `-sandbox`, `-sentinel`), **frontends** (`nearpay-checkout`, `-js`, `-dashboard`, `-console`, `-docs`, `-web`), **SDKs & tools** (`nearpay-node`, `-agentkit`, `-cli`), **on-chain** (`nearpay-contracts`), **platform** (`nearpay-infra`, `-deploy`, `-testbed`). Dependency rule: repos depend only on published artifacts (spec packages, kit packages, images), never on each other's source.
 
 ## 20. Evolution and extension points
 
@@ -348,4 +367,5 @@ See `quality/risks.md`. Top three: **R-01** dependency on 1Click (no SLA, discre
 | 0.1 | 2026-11-05 | First draft from requirements, owner decisions and research (`reference/landscape.md`). |
 | 0.2 | 2026-11-05 | Stress-test pass 1 — money correctness and concurrency (`quality/stress-test.md` §A–B): attempt deadlines bounded by session window; one visible attempt; attempt-row-first crash safety; conditional top-up UX; refund fee modes; sentinel promoted from watchdog to **co-signer of deposit instructions**, checking against identity's registry; payments keeps a settlement-context read model. |
 | 0.3 | 2026-11-05 | Stress-test pass 2 — dependencies, security, operations (§C–E): OpenBao removed from the hot path; authz served from cache + replica; LB health-check thresholds vs. CNPG failover; expand/contract migrations; both sites' egress IPs published; indexer data-source redundancy; Turnstile and price-feed degradation; memo-requiring destinations unsupported; minimum absolute fee for agent payments. |
+| 1.1 | 2026-11-05 | Owner decisions: v1 runs as one Docker Compose stack (each service its own container) on a single host — local first, netcup last (ADR-0015); thin `nearpay` entry repo and NEAR Hackathon compliance (ADR-0016). |
 | 1.0 | 2026-11-05 | Stress-test pass 3 — capacity and product (§F–G): polling budget cut to ≈ 10 status calls/payment; **destination watchers with amount-tag attribution** (P1 for NEAR/EVM) make success detection provider-independent; gas-bounded batching and shard throughput bound for agent payments; manual tax rates in billing; vault partial-refund callback handling. All findings closed or tracked as owned risks/spikes. |

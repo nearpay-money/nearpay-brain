@@ -1,8 +1,52 @@
 # Infrastructure, Deployment and Operations Architecture
 
-> Version 1.0 · Hosting decision: self-managed on **netcup** (ADR-0011). Everything here is code in `nearpay-infra` (hosts, edge) and `nearpay-deploy` (workloads).
+> Version 1.1 · **v1 runtime: §0 (ADR-0015).** §1–§7 describe the post-v1 target topology (ADR-0011). Everything here is code in `nearpay-infra` (hosts, edge) and `nearpay-deploy` (workloads).
 
-## 1. Sites and failure domains
+## 0. v1 topology — one Docker Compose stack, one host (ADR-0015)
+
+```mermaid
+flowchart LR
+  subgraph Host["Host: developer machine (Stages 1..N-1) / netcup server (final stage)"]
+    subgraph edge["network: edge"]
+      TR[traefik<br/>:443 / :80]
+    end
+    subgraph internal["network: internal"]
+      SVC[identity, payments, billing, rails,<br/>agentpay, compliance, webhooks, notify,<br/>sandbox, sentinel - api + worker containers]
+    end
+    subgraph data["network: data"]
+      PG[(postgres 17<br/>db per service)]
+      NA[(nats jetstream)]
+      VA[(valkey)]
+    end
+    subgraph egress["network: egress"]
+      EP[egress-proxy]
+    end
+    ST[static: checkout, js, dashboard, console<br/>served by traefik file server]
+  end
+  BR[Browser / merchant / agent] --> TR
+  TR --> SVC
+  TR --> ST
+  SVC --> PG & NA & VA
+  SVC --> EP
+  EP --> NET[(1Click, NEAR RPC, chain RPCs,<br/>vendors, merchant webhooks)]
+  PG -. WAL-G .-> S3[(off-host EU S3)]
+```
+
+| Item | v1 choice |
+|---|---|
+| Stack location | `nearpay-deploy/compose/` (`compose.yaml` + `compose.local.yaml` + `compose.server.yaml` + `compose.observability.yaml`) |
+| Images | Built from sibling repos (`build.context: ../../nearpay-<svc>`) locally; GHCR digests on the server |
+| Hostnames (local) | `api.nearpay.localhost`, `pay.nearpay.localhost`, `js.nearpay.localhost`, `dashboard.nearpay.localhost`, `ops.nearpay.localhost`, `merchant-demo.nearpay.localhost` (browsers resolve `*.localhost` to 127.0.0.1); local TLS via Traefik default cert or `mkcert` |
+| Hostnames (server) | `*.nearpay.money` via Cloudflare proxy, Authenticated Origin Pulls, origin firewall to Cloudflare ranges |
+| Postgres | One container; `init/` creates a database and a role per service (+ `sentinel_ro` with SELECT on `identity.settlement_destinations` view only); WAL-G continuous archiving + nightly base backup to off-host S3; weekly restore test in `nearpay-testbed` |
+| NATS | Single node JetStream, file store volume; streams per domain, 7-day retention |
+| Secrets | `nearpay-deploy/secrets/<env>/<service>.enc.env` (SOPS + age) → `scripts/deploy.sh` decrypts to Docker secrets; keys never in env vars |
+| Egress | Only `egress-proxy` and the services that need the internet are attached to `egress`; webhook delivery always via the proxy (SSRF rules) |
+| Container hardening | non-root user, read-only root FS, `no-new-privileges`, dropped capabilities, memory/CPU limits, healthchecks; no container mounts the Docker socket |
+| Observability | `observability` profile: OpenTelemetry Collector → VictoriaMetrics, Loki, Tempo, Grafana (same host in v1; external uptime check on the server stage) |
+| Server sizing (final stage) | netcup root server RS 8000 G12.5 (16 dedicated cores, 64 GB, 1 TB NVMe) recommended; RS 4000 is the floor |
+
+## 1. Sites and failure domains (post-v1 target)
 
 ```mermaid
 flowchart LR

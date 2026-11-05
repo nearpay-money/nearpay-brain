@@ -2,10 +2,12 @@
 
 > Version 1.0 · Window: rolling 28 days unless stated. "NearPay-attributable" excludes requests failed with `rail_unavailable` caused by a documented upstream outage (those are tracked separately and published on the status page).
 
-| SLO | SLI (good / valid) | Target | Page when |
+> **v1 (single host, ADR-0015):** availability SLOs are **99.5%**; all latency, correctness, reconciliation and freshness SLOs below apply unchanged.
+
+| SLO | SLI (good / valid) | Target (post-v1) | Page when |
 |---|---|---|---|
-| **API availability** | non-5xx responses / all requests (excl. upstream-attributed 503) | 99.95% | 2% budget burn in 1 h, or 5% in 6 h |
-| **Checkout availability** | synthetic checkout journeys passing / all (3 regions, every minute) | 99.95% | 3 consecutive failures in 2 regions |
+| **API availability** | non-5xx responses / all requests (excl. upstream-attributed 503) | 99.95% (v1: 99.5%) | 2% budget burn in 1 h, or 5% in 6 h |
+| **Checkout availability** | synthetic checkout journeys passing / all (3 regions, every minute) | 99.95% (v1: 99.5%) | 3 consecutive failures in 2 regions |
 | **API latency** | create-session requests < 300 ms / all | 99% | p99 > 300 ms for 15 min |
 | **Live quote latency** | quotes < 4 s / all | 95% | p95 > 4 s for 15 min |
 | **Sentinel co-sign** | co-signatures < 400 ms and non-error / all | 99.9% | error rate > 1% for 5 min |

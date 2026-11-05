@@ -1,6 +1,6 @@
 # ADR-0011: Self-hosted on netcup root servers with k3s; NUE primary, VIE standby, AMS witness
 
-- **Status:** Accepted · **Date:** 2026-11-05 · **Invariants:** INV-4, INV-9
+- **Status:** Accepted as the **post-v1 target topology**; v1 is superseded by [ADR-0015](ADR-0015-v1-single-host-compose.md) · **Date:** 2026-11-05 · **Invariants:** INV-4, INV-9
 
 ## Context
 Owner preference: remote machines, mostly netcup. netcup facts (Nov 2026): root servers have dedicated cores and a 99.9% availability guarantee, VPS do not; Cloud VLAN is same-location only; DDoS filtering to L4; no floating IPs or S3 object storage found; sites NUE, VIE, AMS, MNZ, SIN.

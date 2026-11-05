@@ -49,6 +49,8 @@ flowchart LR
 
 ## 3. Key and secret inventory
 
+> **v1 (ADR-0015):** wherever this table says OpenBao, v1 stores the secret as a SOPS-encrypted file decrypted into a per-service Docker secret; envelope-encryption KEKs are per-service files. Rotation procedures are the same.
+
 | Key / secret | Where | Power if stolen | Control |
 |---|---|---|---|
 | Treasury (`treasury.nearpay.near`) | Hardware wallets, 2-of-3 multisig | Steal accumulated fees | Offline signers, withdrawal runbook, alerts on any outgoing tx |

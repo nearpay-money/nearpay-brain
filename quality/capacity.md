@@ -50,7 +50,11 @@
 
 Per node: 512 GB NVMe → Postgres volume budget 300 GB → ≈ 2 years at P1 before adding netcup local block storage (up to 8 TB) or partitioning cold years to S3.
 
-## 5. Hardware allocation (per NUE node, RS 4000: 12 cores / 32 GB)
+## 5a. v1 single host (ADR-0015)
+
+At P1 the whole stack needs ≈ 6 cores and 16 GB (Postgres 4 GB, NATS/Valkey 1 GB, 10 services × 2 process types ≈ 6 GB, observability 4 GB). RS 8000 G12.5 (16 cores / 64 GB / 1 TB) gives ≥ 2.5× headroom and ≈ 3 years of P1 storage; the design point D (100 payments/s) is **not** a v1 target on one host.
+
+## 5. Hardware allocation (post-v1, per NUE node, RS 4000: 12 cores / 32 GB)
 
 | Workload | CPU req | RAM req |
 |---|---|---|
