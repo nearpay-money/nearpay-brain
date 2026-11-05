@@ -1,6 +1,6 @@
 # LLD — `nearpay-rails`
 
-> Version 1.0 · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
+> Version 1.1 (audited, `audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
 
 ## 1. Scope
 
@@ -52,6 +52,7 @@ create index wd_chain on watched_destinations (chain, address_norm) where active
 
 create table executions (
   id uuid primary key, account_id uuid not null, livemode boolean not null,
+  owner text not null default 'payments' check (owner in ('payments','agentpay')),   -- which service consumes this execution's events
   kind text not null check (kind in ('payment','refund')), method text not null check (method in ('route_quote','intents_transfer')),
   provider text not null check (provider in ('oneclick','sandbox','direct_intents')),
   idempotency_key text not null unique,
@@ -99,6 +100,8 @@ create table verifications (
   details jsonb not null default '{}', checked_at timestamptz not null default now());
 
 create table cursors (name text primary key, value jsonb not null, updated_at timestamptz not null default now());
+create table control_flags (name text primary key, value boolean not null, reason text, updated_at timestamptz not null default now());
+-- 'quoting_enabled' (sentinel kill switch), 'explorer_enabled', 'cross_chain_enabled' (RB-01)
 -- names: 'explorer', 'near-indexer', 'evm:<caip2>'
 
 create table execution_transitions (… foundations §7 …);
@@ -125,10 +128,12 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 | Method & path | Caller (scope) | Request → Response | Errors |
 |---|---|---|---|
 | `POST /internal/executions` | payments (`rails.executions.write`) | see §8.1 → execution view `{id, version, state, method, provider, route_class, applied_fee_bps, settlement:{amount_base, tag, expected, asset_id}, price_snapshot, deposit?:{address, memo, amount_in, min_amount_in, chain, deadline}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}}` | `asset_unsupported`, `route_unavailable`, `pricing_unavailable`, `screening_blocked`, `deadline_too_short`, `quote_rejected`, `quote_integrity_failed`, `rail_unavailable` |
-| `GET /internal/executions/{id}` | payments, sentinel, agentpay (`rails.read`) | execution view + latest evidence | |
+| `GET /internal/executions/{id}` | payments, agentpay (`rails.read`) | execution view + latest evidence | |
+| `GET /internal/executions?deposit_address=&memo=` | sentinel (`rails.read`) | `{exists, execution_id, account_id, livemode}` — used by sentinel **only** to decide whether a mismatch is a genuine integrity breach (kill switch) or a spoofed request | |
+| `GET /internal/assets/{asset_id}` | agentpay, payments (`rails.read`) | `{asset_id, chain, decimals, is_usd_stable, price_usd, price_ok, as_of}` | `asset_unsupported` |
 | `POST /internal/executions/{id}/deposit_tx` | payments | `{tx_hash, sender?}` → `202` | `state_conflict` |
 | `POST /internal/executions/{id}/signals` | payments | `{type:'payer_sent'}` → `202` | |
-| `GET /internal/options?destination_asset=&amount_out=&chain=&wallet=` | payments | `{options:[{origin_asset_id, chain, symbol, decimals, estimated_amount_in, route_class, applied_fee_bps, min_deadline_s, available, reason?}]}` | |
+| `GET /internal/options?destination_asset=&destination_type=&amount_out=&chain=&wallet=` | payments | `{options:[{method: route_quote\|intents_transfer, origin_asset_id, chain, symbol, decimals, estimated_amount_in, route_class, applied_fee_bps, min_deadline_s, available, reason?}]}` — an `intents_transfer` option is listed when the destination is an Intents account (paying asset = destination asset) | |
 | `GET /internal/destination-minimums?keys=` | identity, payments | `{<destination_key>: {min_amount_base, min_usd_micros, computed_at}}` | |
 | `GET /internal/chain-profiles` | payments, checkout via payments | profiles (public subset) | |
 | `GET /internal/evidence?account_id=&livemode=&day=` | payments (reconciliation), sentinel | settled executions with evidence | |
@@ -146,6 +151,7 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 | Consumed | Handler |
 |---|---|
 | `evt.identity.settlement_destination.activated` · `.disabled` | upsert `watched_destinations` |
+| `evt.sentinel.kill_switch.engaged` · `.released` | set `control_flags.quoting_enabled` |
 
 ## 8. Algorithms
 
@@ -154,6 +160,7 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 req: {idempotency_key, kind, method, account_id, livemode, origin:{asset_id, chain, refund_to, refund_type},
       destination:{asset_id, type, chain, address}, pricing:{amount, currency | asset_id+amount},
       fee:{schedule, bearer}, deadline_cap?, refund_swap?:{type: EXACT_INPUT|EXACT_OUTPUT, amount}}
+0. livemode and not control_flags.quoting_enabled → rail_unavailable(kill_switch)   // sentinel kill switch (consumed event)
 1. existing = by idempotency_key → return view (idempotent)
 2. o = tokens[origin], d = tokens[destination]; both enabled else asset_unsupported
 3. compliance.screen({address: refund_to, chain: origin.chain, context: kind, amount_usd}) (1.5 s) → block → screening_blocked
@@ -257,6 +264,7 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent from
 | hot poller | tracker | 500 ms tick | breaker on provider; executions keep `next_poll_at` |
 | Explorer feed | feeds (leader) | 5 s | back off on 429 |
 | NEAR indexer | feeds (leader) | continuous | switch source on gap/stall > 30 s |
+| sandbox feed (test mode) | feeds (leader) | 1 s poll of sandbox `/sim/intents/events` and sandbox status for test executions | same matching code as the NEAR indexer |
 | EVM watchers | feeds (leader per chain) | every 2 s (L2) / 12 s (L1) | RPC pool failover |
 | verifier | tracker | event-driven + 10 s retries | → held after timeout |
 | minimums | feeds | hourly | keep last value |
@@ -279,7 +287,9 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent from
 
 ## 11. Configuration
 
-`NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE` (live only; absent in Stage 1 local → unauthenticated quotes with +fee, appFees still sent), `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_EXPLORER_TOKEN_FILE`, `NP_TREASURY_ACCOUNT` (e.g. `treasury.nearpay.near`, provided by the owner), `NP_NEAR_RPC_URLS`, `NP_NEARDATA_URL`, `NP_EVM_RPC_URLS_<CHAINID>`, `NP_PRICE_SECONDARY_URL`, `NP_PRICE_SECONDARY_KEY_FILE`, `NP_FX_URL`, `NP_SLIPPAGE_BPS` (json), `NP_CHAINS_FILE`, `NP_ONECLICK_QUOTE_RPS`, `NP_ONECLICK_STATUS_RPS`.
+`NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE` (live only; absent in Stage 1 local → unauthenticated quotes with +fee, appFees still sent), `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_EXPLORER_TOKEN_FILE`, `NP_TREASURY_ACCOUNT` (e.g. `treasury.nearpay.near`, provided by the owner), `NP_NEAR_RPC_URLS`, `NP_NEARDATA_URL`, `NP_EVM_RPC_URLS_<CHAINID>`, `NP_PRICE_SECONDARY_URL`, `NP_PRICE_SECONDARY_KEY_FILE`, `NP_FX_URL`, `NP_SLIPPAGE_BPS` (json), `NP_CHAINS_FILE`, `NP_ONECLICK_QUOTE_RPS`, `NP_ONECLICK_STATUS_RPS`, `NP_EXPLORER_ENABLED` (false until the owner provides an Explorer token), `NP_PRICING_CURRENCIES` (Stage 1: `usd`), `NP_TIER_B_LIMITS` (`{per_payment_usd: 2000, per_day_usd: 20000}`).
+
+**Stage 1 pricing posture:** without a secondary price source configured, non-par settlement assets are disabled (`pricing_unavailable`) — Stage 1 demos settle in USD stablecoins; fiat pricing currency is `usd` only (FX lands in Stage 2).
 
 ## 12. Security
 
