@@ -1,10 +1,10 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.0 · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.1 (ID prefixes completed in step 1.1; `nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
-`<prefix>_<base32(UUIDv7)>` — time-sortable, opaque, never reused. `livemode` is a field, not part of the ID.
+`<prefix>_<base32(UUIDv7)>` — time-sortable, opaque, never reused; encoded as TypeID (26 lowercase Crockford base32 symbols, first symbol 0–7). `livemode` is a field, not part of the ID.
 
 | Prefix | Object | Owner |
 |---|---|---|
@@ -12,6 +12,9 @@
 | `usr_` | User | identity |
 | `key_` | API key record (the secret itself is `sk_live_…`/`sk_test_…`/`pk_…`/`rk_…`) | identity |
 | `sd_` | SettlementDestination | identity |
+| `chl_` | Attestation challenge | identity |
+| `fs_` | Fee schedule | identity |
+| `ses_` | Dashboard session | identity |
 | `cs_` | CheckoutSession | payments |
 | `pi_` | PaymentIntent | payments |
 | `pa_` | PaymentAttempt | payments |
@@ -24,10 +27,16 @@
 | `sub_` | Subscription | billing |
 | `md_` | Mandate (vault mirror) | billing |
 | `ex_` | Execution (route run) | rails |
+| `obs_` | Provider observation | rails |
 | `ap_` | Agent (facilitator) payment | agentpay |
 | `evt_` | Event | webhooks |
 | `we_` | WebhookEndpoint | webhooks |
 | `case_` | Compliance case | compliance |
+| `scr_` | Screening result | compliance |
+| `fnd_` | Audit finding | sentinel |
+| `msg_` | Notification message | notify |
+| `req_` | API request (`X-Request-Id`) | gateway |
+| `job_` | Background job (dead letters reference it) | any service |
 
 ## 2. Aggregate map
 

@@ -1,6 +1,6 @@
 # LLD — `nearpay-checkout` and `nearpay-js`
 
-> Version 1.1 (audited, `audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
+> Version 1.2 (hosting and API origin from step 1.1 in §2) · Version 1.1 audited (`audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -9,7 +9,7 @@
 
 ## 2. Build and hosting
 
-Vite build → hashed assets; `index.html` with strict CSP; served by Traefik's static file server (local) / Cloudflare (server stage). Build-time constants: `VITE_API_ORIGIN`, `VITE_SENTINEL_KEYS` (JSON `[{kid, public_key}]` — **pinned**), `VITE_TURNSTILE_SITEKEY`, `VITE_WALLETCONNECT_PROJECT_ID`, `VITE_NEAR_NETWORK`.
+Vite build → hashed assets; `index.html` with strict CSP; served by nginx behind Traefik (local; `frame-ancestors` is sent as a header per route, since a meta CSP cannot carry it) / Cloudflare (server stage). Build-time constants: `VITE_API_ORIGIN` (`https://pay.<domain>/api`: the API is reached same-origin through the gateway, so there is no CORS), `VITE_SENTINEL_KEYS` (JSON `[{kid, public_key}]` — **pinned**), `VITE_TURNSTILE_SITEKEY`, `VITE_WALLETCONNECT_PROJECT_ID`, `VITE_NEAR_NETWORK`.
 
 **CSP (hosted):** `default-src 'none'; script-src 'self' https://challenges.cloudflare.com; style-src 'self'; img-src 'self' data:; connect-src 'self' <API> <EVM/NEAR RPC + WalletConnect relays>; frame-src https://challenges.cloudflare.com; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`.
 **CSP (embed route):** same but `frame-ancestors https:` (and `http://localhost:*` in local), plus the runtime ancestor check in §5.

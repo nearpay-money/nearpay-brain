@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.1 (audited, `audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.2 (error codes named in §5) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -78,6 +78,8 @@ Everything else (attempt, execution, internal events) is never exposed. Renderin
 | `POST /v1/events/{id}/resend` | write | `{endpoint?}` → new delivery |
 | `GET /v1/events/stream` | `events.read` (test mode or session) | SSE of new events (CLI `listen`, Stage 3) |
 | `GET /v1/webhook_signing_keys` | anonymous | JWKS of Ed25519 keys |
+
+Endpoint create/update errors: `url_invalid` (not https outside test mode/localhost, or fails the SSRF rules) and `event_type_unknown` (an `enabled_events` entry that is not a webhook type); both in the spec error catalogue.
 
 ## 6. Algorithms
 

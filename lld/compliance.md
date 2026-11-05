@@ -1,6 +1,6 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.1 (audited, `audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.2 (Stage-1 ops access clarified in §5) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -78,7 +78,7 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 | `POST /v1/account/kyb` | session owner (dashboard) | starts/returns KYB case → `{status, vendor_flow_url?}` (Stage 2: vendor hosted flow) |
 | `POST /webhooks/kyb/{vendor}` | anonymous route; vendor HMAC signature verified | vendor decision → case update |
 | `POST /internal/kyb_cases/{account_id}/decision` | ops (`compliance.kyb.decide`) | `{decision: approved\|rejected\|needs_info, reason}` (Stage 1 manual path) |
-| `GET/POST /internal/cases…`, `POST /internal/blocklist` | ops | case management, blocklist edits (audited) |
+| `GET/POST /internal/cases…`, `POST /internal/blocklist` | ops | case management, blocklist edits (audited). HTTP shapes are specified with the Stage 2 console, their first network consumer (OQ-T-02); in Stage 1 the same use cases run in-process through the ops CLI (`docker compose exec compliance-api node dist/ops.js …`, platform §3) |
 
 ## 6. Events
 

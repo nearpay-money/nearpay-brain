@@ -1,6 +1,6 @@
 # LLD — `nearpay-identity`
 
-> Version 1.1 (audited, `audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.2 (configuration wiring from step 1.1 in §11) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
@@ -270,6 +270,8 @@ Query account + fee schedule + active destinations (+ defaults) for `(account, l
 ## 11. Configuration
 
 `NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file; v1 list: `POST /v1/auth/{signup,magic_links/verify,passkeys/*,recovery}`, `GET|POST /v1/checkout/sessions/{id}/public/**`, `POST /v1/checkout/sessions/{id}/agent_pay/**`, `GET|POST /v1/payment_links/{id}/public/**`, `GET /v1/invoices/{id}/public`, `POST /v1/attestations/deposit_instructions`, `GET /v1/attestations/keys`, `GET /v1/assets`, `GET /x402/supported`, `GET /v1/webhook_signing_keys`, `POST /webhooks/kyb/{vendor}`, `POST /webhooks/email/{provider}` — every other route requires a credential), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
+
+Step 1.1 wiring (platform §1): the anonymous allow-list is `PUBLIC_ANONYMOUS_ROUTES` exported by `@nearpay/spec` (derived from route auth `anonymous`/`client_secret`), so `NP_PUBLIC_ANON_ROUTES` is not needed while it matches the spec; `NP_JWT_KEYS_DIR=/run/secrets/jwt` holds `current.pem` and `next.pem` (kid = `local-` + 12 hex of SHA-256 of the raw public key locally); `NP_SERVICE_CLIENTS_FILE` is `{"clients":[{"client_id","secret_sha256"}]}` with scopes taken from the spec `SERVICE_CLIENT_SCOPES`; identity joins the `egress` network for attestation RPC (§8.2) and Turnstile.
 
 ## 12. Security
 

@@ -1,6 +1,6 @@
 # LLD — `nearpay-sentinel`
 
-> Version 1.1 (audited, `audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
+> Version 1.2 (findings route timing in §5) · Version 1.1 audited (`audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -93,7 +93,7 @@ No attacker-controllable input can engage the global kill switch; a compromised 
 | `POST /v1/attestations/deposit_instructions` | anonymous (gateway per-IP limit) | `200` signed attestation (cached per `deposit_key` until `expires_at`) | `400 invalid_request`, `409 attestation_refused`, `409 attestation_stale`, `503 attestation_unavailable` |
 | `GET /v1/attestations/keys` | anonymous | `{keys:[{kid, public_key, not_after}]}` (informational; checkout uses build-pinned keys) | |
 | `POST /internal/kill-switch` | ops (`sentinel.killswitch`) | `{engaged, reason}` → state | |
-| `GET /internal/findings` | ops | findings list | |
+| `GET /internal/findings` | ops | findings list (HTTP shape specified with the Stage 2 console, OQ-T-02; Stage 1 reads findings through the ops CLI) | |
 
 ## 7. Events
 

@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.0 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.1 (OQ-T-01, OQ-T-02 from step 1.1) · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -21,6 +21,13 @@
 | **SP-13** | Amount-tag behaviour per asset (decimals, minimum transfer units, chains that round) | Watcher attribution | Tests per chain | P1 |
 | **SP-14** | Exact DIP-4 `transfer` event and NEP-245 `mt_transfer` log shapes emitted by `intents.near` (incl. `memo`) on mainnet | Indexer attribution by binding/tag | Record mainnet receipts as fixtures | Stage 1 |
 | **SP-15** | OFAC SDN advanced XML source URL and digital-currency feature identifiers | Local sanctions list (compliance Stage 1) | Download + parse fixture | Stage 1 |
+
+## Contract gaps found while implementing
+
+| ID | Question | Default until answered | Resolve by |
+|---|---|---|---|
+| **OQ-T-01** | Query grammar of `GET /v1/payment_intents/search` (api-conventions §2 "search endpoints") | Stage 1 dashboards use the list endpoint with `status` and `created[gte/lte]` filters | Stage 2 dashboard filtering |
+| **OQ-T-02** | Request/response shapes of ops HTTP routes for compliance cases, blocklist edits and sentinel findings | Stage 1 runs these use cases in-process via the ops CLI (no network path); the spec carries the ops routes whose shapes the LLDs define (KYB decision, kill switch) | Stage 2 console |
 
 ## Business
 

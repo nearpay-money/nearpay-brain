@@ -1,6 +1,6 @@
 # Infrastructure, Deployment and Operations Architecture
 
-> Version 1.1 · **v1 runtime: §0 (ADR-0015).** §1–§7 describe the post-v1 target topology (ADR-0011). Everything here is code in `nearpay-infra` (hosts, edge) and `nearpay-deploy` (workloads).
+> Version 1.2 (static sites served by nginx behind Traefik) · **v1 runtime: §0 (ADR-0015).** §1–§7 describe the post-v1 target topology (ADR-0011). Everything here is code in `nearpay-infra` (hosts, edge) and `nearpay-deploy` (workloads).
 
 ## 0. v1 topology — one Docker Compose stack, one host (ADR-0015)
 
@@ -21,7 +21,7 @@ flowchart LR
     subgraph egress["network: egress"]
       EP[egress-proxy]
     end
-    ST[static: checkout, js, dashboard, console<br/>served by traefik file server]
+    ST[static: checkout, js, dashboard, console<br/>nginx behind traefik]
   end
   BR[Browser / merchant / agent] --> TR
   TR --> SVC

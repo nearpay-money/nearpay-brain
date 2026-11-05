@@ -1,6 +1,6 @@
 # Repository Topology
 
-> Version 1.0 · Decision: ADR-0001 (polyrepo by bounded context, contract-first). GitHub org: `nearpay-money`. All repos are siblings under one parent folder so relative links like `../nearpay-brain` work locally.
+> Version 1.1 (`nearpay-kit` has ten packages: `bus` and `http` split out in step 1.1) · Decision: ADR-0001 (polyrepo by bounded context, contract-first). GitHub org: `nearpay-money`. All repos are siblings under one parent folder so relative links like `../nearpay-brain` work locally.
 
 ## 1. Why this split (first principles)
 
@@ -68,7 +68,7 @@ flowchart TB
 | 0 | `nearpay-brain` | Knowledge | docs | — | always |
 | 1 | `nearpay` | Entry | guide | github.com/nearpay-money/nearpay (hackathon projectUrl) | Stage 1 (step 1.1) |
 | 2 | `nearpay-spec` | Contracts & shared | spec | npm: @nearpay/spec (public), @nearpay-internal/spec (private) | Stage 1 (step 1.1) |
-| 3 | `nearpay-kit` | Contracts & shared | library | npm (private): @nearpay-internal/{money,ids,service,db,auth,intents,chains,testing} | Stage 1 (step 1.1) |
+| 3 | `nearpay-kit` | Contracts & shared | library | npm (private): @nearpay-internal/{ids,money,chains,intents,db,bus,auth,http,service,testing} | Stage 1 (step 1.1) |
 | 4 | `nearpay-identity` | Services | service | image: ghcr.io/nearpay-money/identity · routes /v1/account, /v1/settlement_destinations, /v1/api_keys, /authz | Stage 1 (step 1.2) |
 | 5 | `nearpay-payments` | Services | service | image: ghcr.io/nearpay-money/payments · routes /v1/checkout, /v1/payment_intents, /v1/refunds, /v1/payment_links, /v1/customers, /v1/balance_transactions | Stage 1 (step 1.2) |
 | 6 | `nearpay-billing` | Services | service | image: ghcr.io/nearpay-money/billing · routes /v1/products, /v1/prices, /v1/invoices, /v1/subscriptions, /v1/mandates | Stage 3 (step 3.2) |
@@ -157,14 +157,16 @@ nearpay-spec/
 
 ### nearpay-kit
 
-Small, versioned TypeScript runtime libraries shared by services: integer money, IDs, service bootstrap (Fastify + OpenTelemetry), Postgres helpers (outbox, inbox, idempotency), internal auth, NEAR Intents payload build/sign/verify, chain address validation, test utilities.
+Small, versioned TypeScript runtime libraries shared by services: integer money, IDs, service bootstrap (Fastify + OpenTelemetry), Postgres helpers (outbox, inbox, idempotency), NATS JetStream bus, internal auth, resilient HTTP, NEAR Intents payload build/sign/verify, chain address validation, test utilities.
 
 ```
 nearpay-kit/
 ├── packages/
 │   ├── auth/
+│   ├── bus/
 │   ├── chains/
 │   ├── db/
+│   ├── http/
 │   ├── ids/
 │   ├── intents/
 │   ├── money/

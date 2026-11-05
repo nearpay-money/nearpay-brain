@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.1 (audited, `audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.2 (step 1.1 implemented in `nearpay-spec` 0.1.0 and `nearpay-kit` 0.1.0; changes in §17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -69,14 +69,14 @@ Rules: additive changes only within a version; new enum values are allowed only 
 |---|---|
 | `@nearpay-internal/ids` | `newId(prefix): PrefixedId`, `toUuid(id)`, `fromUuid(prefix, uuid)`, `isId(prefix, s)` — UUIDv7, Crockford base32 (26 chars) |
 | `@nearpay-internal/money` | `type Amount = bigint`; `Fiat {amount: bigint, currency}`; `AssetAmount {amount: bigint, assetId}`; `parseUnits`, `formatUnits`, `mulDivFloor(a,b,c)`, `bpsOf(amount,bps)`, `minorUnits(currency)`; throws on any `number` input |
-| `@nearpay-internal/service` | `createService({name, config, routes, consumers, jobs})` → Fastify app with health (`/healthz`, `/readyz`), metrics, OTel, pino, graceful shutdown (30 s drain), request-id, error mapping; `loadConfig(zodSchema)` reading env + `/run/secrets/*` |
-| `@nearpay-internal/db` | `createDb(url)` (Kysely + pg pool), `withTx(fn, {isolation})`, `migrate(dir)`, **outbox** `emit(tx, event)` + `startRelay()`, **inbox** `consume(tx, eventId)`, **idempotency** `withIdempotency(ctx, key, hash, fn)`, `advisoryLeader(name, fn)` |
+| `@nearpay-internal/service` | `createService({name, config, routes: [implement(route, handler)], idempotency, readiness, background})` → Fastify app with spec-route auth + validation, health (`/healthz`, `/readyz`), metrics, OTel, pino, graceful shutdown (30 s drain), request-id, error mapping, SSE; consumers and jobs run as `background` tasks; `loadConfig(shape)` reading `NP_*` env + `NP_*_FILE` secrets (`/run/secrets/*`); `runMain({api, worker, migrate, …})` |
+| `@nearpay-internal/db` | `createDb({url\|urlFile})` (Kysely + pg pool), `withTx(db, fn, {isolation})`, `migrate(db, dir)`, **outbox** `emit(tx, event)` + `startOutboxRelay({db, pool, publish})`, **inbox** `consume(tx, eventId)`, **idempotency** `withIdempotency(db, ctx, fn)` / `idempotencyStore(db, cipher)`, **jobs** `enqueueJob`/`startJobWorker`, `advisoryLeader({pool, name, run})`, envelope encryption, retention |
 | `@nearpay-internal/bus` | `connectBus()`, `ensureStreams(defs)`, `subscribe({durable, filter, handler, maxDeliver})`, `publish(subject, envelope, msgId)` |
 | `@nearpay-internal/auth` | `verifyInternalJwt(token, jwks)`, `requireScope(ctx, scope)`, `serviceTokenClient({clientId, secretFile})`, header constants |
 | `@nearpay-internal/http` | `httpClient({baseUrl, timeoutMs, retries, breaker})` with jittered backoff, idempotent-only retries, circuit breaker (opossum semantics), trace + request-id propagation |
 | `@nearpay-internal/intents` | NEAR Intents payloads: `buildTransferIntents`, `buildPayload({signerId, deadline, nonce, intents})`, `makeNonce(saltHex)`, `encodeNep413`, `encodeErc191`, `verifySigned(multiPayload)`, `parseDip4Events(logs)`, `intentsRpc({currentSalt, simulateIntents, executeIntents, mtBatchBalanceOf})` |
 | `@nearpay-internal/chains` | Chain registry (CAIP-2 ↔ 1Click `blockchain` ↔ display), address validation per chain family, finality rules, explorer URL builders |
-| `@nearpay-internal/testing` | Testcontainers fixtures, fake clock, factories for every aggregate, `expectEvent(subject, matcher)` |
+| `@nearpay-internal/testing` | Testcontainers fixtures, fake clock, factories for every aggregate, `eventProbe(natsUrl)` + `expectEvent(probe, subject, matcher)`, test tokens |
 
 Kit packages contain **no domain rules** (ADR-0001). Semver; a breaking change bumps major and ships a codemod note.
 
@@ -149,7 +149,7 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 
 - **Streams:** one per producing domain — `EVT_IDENTITY` (`evt.identity.>`), `EVT_PAYMENTS`, `EVT_BILLING`, `EVT_RAILS`, `EVT_AGENTPAY`, `EVT_COMPLIANCE`, `EVT_SENTINEL`, `EVT_WEBHOOKS`.
 - **No PII in events:** payloads carry IDs and non-personal fields only; consumers needing PII (notify) call the owner's internal API. File storage, limits retention 7 days, duplicate window 120 s (publish with `Nats-Msg-Id = event id`).
-- **Consumers:** durable pull consumers named `<consumer-svc>--<stream>`, explicit filter subjects, `ack_wait 30s`, `max_deliver 20`, backoff `[1s,5s,30s,2m,10m…]`; after max deliver the handler writes `dead_letters` and acks.
+- **Consumers:** durable pull consumers named `<consumer-svc>--<stream>`, explicit filter subjects, `ack_wait 30s`, `max_deliver 20`, backoff `[1s,5s,30s,2m,10m…]`; after max deliver the handler writes `dead_letters` and acks. The backoff is applied by `nak(delay)` on handler failure, **not** with the consumer's `backoff` setting: NATS replaces `ack_wait` with `backoff[0]` when `backoff` is set (verified on 2.10.29), which would redeliver any message whose handler runs longer than 1 s. Unparseable envelopes and envelopes whose `subject` differs from the NATS subject are dead-lettered at once.
 - **Handler contract:** in one DB transaction: `inbox.consume(event.id)` (skip if seen) → load aggregate → ignore if `aggregate.version` ≤ last applied version stored in the read model → apply → commit → ack.
 - **Ordering:** not guaranteed across subjects; consumers rely on `aggregate.version`.
 
@@ -157,7 +157,7 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 
 | Token | Minted by | Claims | TTL | Use |
 |---|---|---|---|---|
-| **Request token** | identity `/internal/authz` (gateway ForwardAuth) | `iss=nearpay-identity`, `aud=nearpay`, `sub` (principal id), `acct`, `lm`, `ptype` (`secret_key`·`restricted_key`·`publishable_key`·`client_secret`·`session`·`ops`), `scp[]`, `rid` | 60 s | Forwarded as `X-NearPay-Token` to the routed service; services may forward it on calls made *for that request* |
+| **Request token** | identity `/internal/authz` (gateway ForwardAuth) | `iss=nearpay-identity`, `aud=nearpay`, `sub` (principal id), `acct`, `lm`, `ptype` (`secret_key`·`restricted_key`·`publishable_key`·`client_secret`·`session`·`ops`·`anonymous`), `scp[]`, `rid`; sessions add `role` and `step_up_until` (unix s) | 60 s | Forwarded as `X-NearPay-Token` to the routed service. Calls to other services authenticate with the **service token** (every internal route authorizes `service:`/`ops:` scopes); forwarding the request token is opt-in (`httpClient({forwardRequestToken: true})`) for a target that authorizes the original caller |
 | **Service token** | identity `/internal/service-tokens` (client credentials: `client_id` + secret file) | `ptype=service`, `sub=<svc>`, `scp[]` (static per service, see each LLD) | 5 min, cached until 30 s before expiry | Background jobs and service-to-service calls not tied to a request |
 
 **Service scope catalogue** (`service_clients.scopes`; a call outside this table is a defect):
@@ -174,7 +174,7 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 | compliance, webhooks, sandbox | none outbound |
 | ops principals (`ptype=ops`) | `compliance.kyb.decide`, `compliance.cases.write`, `sentinel.killswitch`, `rails.read`, `payments.read` |
 
-EdDSA (Ed25519) signatures, `kid` header, JWKS at identity `/internal/jwks` (cached 5 min, refetch on unknown `kid`). Every handler calls `requireScope`. Headers: `X-NearPay-Token`, `X-Request-Id`, `traceparent`, `Idempotency-Key`, `NearPay-Version`.
+EdDSA (Ed25519) signatures, `kid` header, JWKS at identity `/internal/jwks` (cached 5 min, refetch on unknown `kid`). `@nearpay-internal/service` verifies the token and authorizes every route from its spec definition before the handler runs (principal type, key/service/ops scopes, session roles and step-up, test-mode-only); routes open at the gateway (`anonymous`, `client_secret`, `gateway`, `internal`, `service_client`) accept requests without a token and expose an authorized principal only when one matches. Handlers call `requireScope` for finer checks. Headers: `X-NearPay-Token`, `X-Request-Id`, `traceparent`, `Idempotency-Key`, `NearPay-Version`.
 
 ## 10. HTTP conventions (internal and outbound)
 
@@ -213,12 +213,13 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 - **Envelope (`MultiPayload`):** `{"standard":"nep413","payload":{"recipient":"intents.near","nonce","message"},"public_key":"ed25519:…","signature":"ed25519:…"}` or `{"standard":"erc191","payload":"<json string>","signature":"secp256k1:…"}` (v normalised to 0/1). Keys/signatures are `<curve>:<base58>`; secp256k1 pubkeys 64 B uncompressed, signatures 65 B r‖s‖v.
 - **Transfer intent:** `{"intent":"transfer","receiver_id":"<acct>","tokens":{"nep141:<token>":"<amount>"},"memo":"<binding>"}`.
 - **Calls:** `simulate_intents({"signed":[…]})` → `{intents_executed[{intent_hash,account_id,nonce}], logs[], min_deadline, state{fee,current_salt}}`; `execute_intents({"signed":[…]})` (gas: from simulation + margin, SP-07); `mt_batch_balance_of({account_id, token_ids})` → `string[]`.
-- **Events:** log lines prefixed `EVENT_JSON:`; `{"standard":"dip4","version":"0.3.0","event":"intents_executed"|"token_diff"|"transfer"|…,"data":[…]}` plus NEP-245 `mt_transfer`/`mt_mint`/`mt_burn`. The `transfer` event data shape is not documented → the parser treats `intents_executed` + `mt_transfer` (`old_owner_id`, `new_owner_id`, `token_ids`, `amounts`, `memo`) as authoritative and is fixture-tested against mainnet receipts (SP-14).
+- **Events:** log lines prefixed `EVENT_JSON:`; `{"standard":"dip4","version":"0.4.3","event":"intents_executed"|"token_diff"|"transfer"|…,"data":[…]}` (version observed on mainnet 2026-11-05; the parser accepts any `dip4` version) plus NEP-245 `mt_transfer`/`mt_mint`/`mt_burn`. The `transfer` event data shape is not documented → the parser treats `intents_executed` + `mt_transfer` (`old_owner_id`, `new_owner_id`, `token_ids`, `amounts`, `memo`) as authoritative and is fixture-tested against mainnet receipts (SP-14).
 
 ## 15. Containers
 
-- Base `node:22-bookworm-slim` (multi-stage; final stage `gcr.io/distroless/nodejs22-debian12` where native deps allow), non-root UID 10001, read-only root FS, `tmpfs /tmp`, `HEALTHCHECK` → `/healthz`.
-- One image per service; process type selected by command: `node dist/main.js api|worker|relay|migrate`.
+- Base `node:22-bookworm-slim` (multi-stage; final stage `gcr.io/distroless/nodejs22-debian12` where native deps allow), non-root UID 10001, read-only root FS, `tmpfs /tmp`, `HEALTHCHECK` → `node dist/main.js healthcheck` (built into `runMain`: GET `127.0.0.1:$NP_PORT/healthz`, no curl needed in distroless).
+- One image per service; process type selected by command: `node dist/main.js api|worker|relay|migrate|…` (`runMain` exits 2 on an unknown process, 1 on invalid configuration or startup failure, drains 30 s on SIGTERM). The image's entrypoint is `node`; Compose passes `[dist/main.js, <process>]`.
+- Builds take `ARG NP_REGISTRY_URL` for `@nearpay/*` and `@nearpay-internal/*` (platform §1).
 
 ## 16. Testing conventions
 
@@ -230,3 +231,13 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 | Contract | provider/consumer against `nearpay-spec` routes and events | Vitest + spec fixtures | in CI of both sides |
 | E2E | whole stack via Compose | `nearpay-testbed` (Playwright, scripts) | per stage exit |
 | Mainnet canary | live rails, capped budget | `nearpay-testbed/canary` | stage demos |
+
+## 17. Changes in version 1.2 (from the step 1.1 implementation)
+
+- **Events (§8):** consumer backoff is applied with `nak(delay)`; the JetStream `backoff` setting is never used (it overrides `ack_wait`).
+- **Auth (§9):** claims gained `role` and `step_up_until` (sessions) and `ptype=anonymous`; service-to-service calls use service tokens by default; route authorization happens in the service bootstrap.
+- **Kit details:** `@nearpay-internal/db` `idempotencyStore(db, cipher)` feeds the service bootstrap's automatic idempotency for `idempotent` routes called by account principals (replays carry `Idempotent-Replayed: true`; in-flight keys answer `409` + `Retry-After: 1`); `@nearpay-internal/service` `runMain` with a built-in `healthcheck` process; `@nearpay-internal/testing` `expectEvent(probe, subject, matcher)` (the probe subscribes before the action).
+- **Tracing (§12):** a tracer provider always runs (trace ids in logs and propagation); spans are exported over OTLP/HTTP only when `NP_OTEL_ENDPOINT` is set.
+- **Configuration (§13):** keys are camelCase in code and `NP_<SNAKE_CASE>` in the environment; values marked secret are accepted only from `NP_<NAME>_FILE`.
+- **Intents (§14):** DIP-4 version on mainnet is `0.4.3`.
+
