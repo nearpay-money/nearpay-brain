@@ -1,6 +1,6 @@
 # LLD — `nearpay-sentinel`
 
-> Version 1.0 · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
+> Version 1.1 (audited, `audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -46,7 +46,9 @@ create table kill_switch_log (id uuid primary key, engaged boolean not null, rea
 
 ## 5. Co-signing rules
 
-Request (from checkout): `{livemode, kind, attempt_id, deposit?: {address, memo, chain, origin_asset_id, amount_in, deadline}, requirement?: {pay_to, token, amount, fee_to, fee_amount, binding, deadline}}`.
+Request (from checkout): `{livemode, kind, attempt_id, attestation_ticket, deposit?: {address, memo, chain, origin_asset_id, amount_in, deadline}, requirement?: {pay_to, token, amount, fee_to, fee_amount, binding, deadline}}`.
+
+**Gate (before any provider call):** `attestation_ticket` must verify with the payments ticket public key, be unexpired, and match `attempt_id`, `livemode` and the deposit key/binding; otherwise `401 ticket_invalid` (no provider call, no kill switch). The ticket only rate-gates access; it is never evidence of correctness.
 
 **`route_quote` checks (all must pass):**
 
@@ -55,8 +57,8 @@ Request (from checkout): `{livemode, kind, attempt_id, deposit?: {address, memo,
 | R1 | `GET /v0/status?depositAddress&depositMemo` (live: 1Click with sentinel's own key; test: sandbox) returns 200 | `unavailable` (503) |
 | R2 | `verifyQuoteSignature(status.quoteResponse)` (live: SDK; test: sandbox key) | `security` |
 | R3 | `quoteRequest.referral == 'nearpay'` | `security` |
-| R4 | `quote.depositAddress == deposit.address`, memo equal, `quoteRequest.originAsset == deposit.origin_asset_id`, `quote.amountIn == deposit.amount_in`, `quote.deadline == deposit.deadline` | `security` |
-| R5 | registry row exists: `address_norm == norm(quoteRequest.recipient)`, `asset_id == quoteRequest.destinationAsset`, `type` matches `recipientType`, `livemode` matches, `status = active` | `security` |
+| R4 | `quote.depositAddress == deposit.address`, memo equal, `quoteRequest.originAsset == deposit.origin_asset_id`, `quote.amountIn == deposit.amount_in`, `quote.deadline` and `deposit.deadline` equal as instants | `security` |
+| R5 | registry rows with `address_norm == norm(quoteRequest.recipient)`, `asset_id == quoteRequest.destinationAsset`, matching `type`/`livemode`, `status = active`: exactly one → pass; several → prefer the single `signature`-verified row, else `ambiguous`; none → `security` | `security` / `ambiguous` |
 | R6 | `appFees` has exactly one entry, `recipient == TREASURY`, `fee ≤ 500` | `security` |
 | R7 | `status ∈ {PENDING_DEPOSIT, KNOWN_DEPOSIT_TX, INCOMPLETE_DEPOSIT, PROCESSING}` and `deadline > now + 60 s` | `stale` (409) |
 
@@ -73,7 +75,16 @@ Request (from checkout): `{livemode, kind, attempt_id, deposit?: {address, memo,
 ```
 `fingerprint` = first 10 chars of Crockford base32 of `sha256(chain|address_norm|asset_id)`, grouped 4-4-2.
 
-**Security failure → automatic kill switch:** any `security`-class failure in live mode engages the kill switch (§8) and returns `409 attestation_refused`; `stale` and `unavailable` do not.
+**Classes and reactions:**
+
+| Class | Response | Kill switch |
+|---|---|---|
+| `security` | `409 attestation_refused` | **Only if** rails confirms NearPay issued this deposit address (`GET /internal/executions?deposit_address=` → `exists`) — a genuine integrity breach. If rails does not know it, the request is a spoof: refuse, count, rate-limit the IP, low-severity alert. If rails is unreachable: refuse + page (no automatic switch). |
+| `ambiguous` | `409 attestation_refused` | never (attacker-inducible); case for ops |
+| `stale` | `409 attestation_stale` | never |
+| `unavailable` | `503 attestation_unavailable` | never |
+
+No attacker-controllable input can engage the global kill switch; a compromised rails can at most *suppress* the switch, while the address is still refused.
 
 ## 6. API
 
@@ -113,7 +124,7 @@ Request (from checkout): `{livemode, kind, attempt_id, deposit?: {address, memo,
 
 ## 10. Configuration
 
-`NP_SENTINEL_SIGNING_KEY_FILE` (Ed25519, kid in filename), `NP_TREASURY_ACCOUNT`, `NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE`, `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_REGISTRY_DB_URL_FILE` (sentinel_ro), `NP_AUDIT_SAMPLE_RATE` (1.0 in Stages 1–2).
+`NP_SENTINEL_SIGNING_KEY_FILE` (Ed25519, kid in filename), `NP_PAYMENTS_TICKET_PUBKEY`, `NP_RAILS_URL` (+ sentinel service credentials, scope `rails.read`), `NP_TREASURY_ACCOUNT`, `NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE`, `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_REGISTRY_DB_URL_FILE` (sentinel_ro), `NP_AUDIT_SAMPLE_RATE` (1.0 in Stages 1–2).
 
 ## 11. Security
 
