@@ -1,7 +1,7 @@
 # External Landscape — Verified Facts
 
 > Facts the design depends on, with source and date read. **Re-verify before relying on anything older than 90 days.** Items marked ⚠ are unconfirmed and tracked as spikes in `roadmap/open-questions.md`.
-> Last verified: 2026-11-05.
+> Last verified: 2026-11-05 (1Click OpenAPI v0.1.10, hackathon rules added).
 
 ## 1. NEAR Intents (settlement fabric)
 
@@ -19,7 +19,9 @@
 
 | Fact | Design consequence |
 |---|---|
-| Base `https://1click.chaindefuser.com`; `GET /v0/tokens`, `POST /v0/quote`, `POST /v0/deposit/submit`, `GET /v0/status`. | `OneClickProvider` adapter in `nearpay-rails`. |
+| Base `https://1click.chaindefuser.com`; `GET /v0/tokens`, `POST /v0/quote`, `POST /v0/deposit/submit`, `GET /v0/status` (OpenAPI v0.1.10). Auth: header **`X-API-Key`** (recommended; JWT bearer is legacy); `/v0/tokens` needs none. Errors: `400 {message}`, `401`, `404` (status: deposit address not found). No rate-limit headers documented. | `OneClickProvider` adapter in `nearpay-rails`; treat 429/5xx defensively. |
+| Quote response top level: `correlationId`, `timestamp`, `signature`, `quoteRequest`, `quote`; quote adds `refundFee`, `withdrawFee`. Status `swapDetails` adds `depositedAmount*`, `refundReason` (e.g. `PARTIAL_DEPOSIT`), `withdrawFee`. Request adds `rebates`, `confidentiality`, `insured` (+0.02%). | Persist `correlationId`; map `refundReason`. |
+| **Quote signature** = signature over Base58(SHA-256(stable-stringify({...quoteRequest, ...quoteResponse, timestamp}))); verify with `verifyQuoteSignature()` from `@defuse-protocol/one-click-sdk-typescript` ≥ 0.1.24. ⚠ Key/algorithm not documented outside the SDK (SP-01). | Sentinel and checkout verify via the SDK. |
 | Quote fields: `dry`, `swapType` (`EXACT_INPUT`, `EXACT_OUTPUT`, `FLEX_INPUT`, partner-only `ANY_INPUT`), `slippageTolerance` (bps), `originAsset`, `destinationAsset`, `amount`, `depositType`/`refundType` (`ORIGIN_CHAIN`/`INTENTS`), `refundTo`, `recipient`, `recipientType` (`DESTINATION_CHAIN`/`INTENTS`), `deadline` (required), `referral`, `appFees[{recipient, fee}]`, `depositMode` (`SIMPLE`/`MEMO`). | Checkout uses `EXACT_OUTPUT` so the merchant receives the exact amount. |
 | Response: `quote.depositAddress`, `depositMemo`, `amountIn`, `minAmountIn`, `amountOut`, `minAmountOut`, `deadline`, `timeWhenInactive`, `timeEstimate`; top-level `signature`. | Store the full response; ⚠ verify `signature` client-side if the scheme is published (SP-01). |
 | `EXACT_OUTPUT`: deposits below `minAmountIn` are refunded at the deadline; excess is refunded to `refundTo`. | Underpay/overpay outcomes are provider-enforced; NearPay mirrors them. |
@@ -62,3 +64,15 @@
 | Cloud VLAN is **same-location only**; firewall cannot filter VLAN traffic. | WireGuard mesh between sites; host firewall (nftables) + Cilium policies. |
 | DDoS filter up to L4 (Anexia, 2 Tbps). No L7. No floating IPs found. No S3-compatible object storage found. | Cloudflare in front for L7/WAF/LB; backups to an off-provider EU S3 bucket. |
 | No nested virtualisation. | Containers on k3s, not VMs-in-VMs. |
+
+## 7. NEAR Hackathon (rules read 2026-11-05 from https://nearhackathon.com/HACKATHON.md — re-read before submitting)
+
+| Fact | Consequence |
+|---|---|
+| Window 2026-11-01 → **2026-11-14 23:59 UTC**; repo public by then; judging 11-16, results by 11-18. Pre-existing code allowed; window counts from the 2026-10-19 announcement. | Stage 1 must be demoable and documented by Nov 14 (ADR-0016). |
+| One submission per project; `projectUrl` = one public repo, unique. | Thin `nearpay` entry repo. |
+| README must serve machine and human readers, "do X → see Y", no marketing; list libraries/templates/AI-generated code; LICENSE required (any). | Apache-2.0 everywhere; "Built with" sections. |
+| Local-only demo OK with reproducible README and a video in the X post; hosted demo a plus (keep up through 11-18, ideally 11-25). | Stage 1 demo local against mainnet. |
+| No Intents testnet (Q-007): use mainnet, separate dev accounts, tiny amounts, `dry: true` quotes. 1Click without key: +0.2% fee (Q-006). | Sandbox for test mode; canaries cost-capped. |
+| Tracks used: `realworld` (stablecoins, NEAR Intents, meta transactions) and `agents` (agent commerce, NEAR Intents). | Stage 1 = checkout + agent payments. |
+| Never without explicit human confirmation: submit, post, make public, push, sign, spend, deploy to mainnet, commit secrets. Do not invent accounts. | Agents prepare; humans execute. |

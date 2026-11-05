@@ -6,7 +6,7 @@
 
 | ID | Question | Why it matters | Resolve by | Blocks |
 |---|---|---|---|---|
-| **SP-01** | Is the 1Click quote `signature` verifiable with a published key/scheme? Can browsers call `/v0/status` (CORS)? | Client-side verification of deposit instructions (T-03 layer 4) | Ask 1Click team; test | P1 (nice-to-have; sentinel covers) |
+| **SP-01** | Quote signatures are verifiable via `verifyQuoteSignature()` in `@defuse-protocol/one-click-sdk-typescript` ≥ 0.1.24 — confirm algorithm/key from SDK source, browser bundle size, and whether browsers can call `/v0/status` (CORS) | Client-side verification of deposit instructions (T-03 layer 4) | Read SDK source; test | Stage 1 (sentinel covers if unresolved) |
 | **SP-02** | Does `EXACT_OUTPUT` always deliver exactly `amountOut` (no surplus/shortfall)? | Amount tags, evidence checks | Mainnet tests + vendor confirmation | P0 |
 | **SP-03** | `INCOMPLETE_DEPOSIT`: are top-ups to the same address accepted? Behaviour for deposits after `timeWhenInactive`? | Underpay UX | Vendor + tests | P1 |
 | **SP-04** | Partner rate limits for `/v0/quote` and `/v0/status`; any webhooks/streams for partners? Meaning of `KNOWN_DEPOSIT_TX`? | Capacity (D), polling design | Partner agreement | P0 |

@@ -12,9 +12,11 @@
 | [0008](ADR-0008-subscriptions.md) | Subscriptions: send_invoice everywhere, auto_debit via NEAR vault | Accepted |
 | [0009](ADR-0009-agent-payments-x402.md) | Agent payments via x402 v2 | Accepted |
 | [0010](ADR-0010-checkout-isolation.md) | Checkout as isolated static SPA; widget = iframe | Accepted |
-| [0011](ADR-0011-netcup-k3s-two-site.md) | netcup root servers, k3s, NUE/VIE/AMS | Accepted |
+| [0011](ADR-0011-netcup-k3s-two-site.md) | netcup root servers, k3s, NUE/VIE/AMS | Accepted (post-v1 target; v1 → 0015) |
 | [0012](ADR-0012-independent-verification.md) | Evidence before success | Accepted |
 | [0013](ADR-0013-typescript-rust.md) | TypeScript services/frontends, Rust contracts | Accepted |
 | [0014](ADR-0014-auth-gateway.md) | Traefik gateway + ForwardAuth, internal JWTs | Accepted |
+| [0015](ADR-0015-v1-single-host-compose.md) | v1: every service a container in one Compose stack, single host | Accepted |
+| [0016](ADR-0016-entry-repo-and-hackathon.md) | Thin `nearpay` entry repo; NEAR Hackathon compliance | Accepted |
 
 New ADRs copy [ADR-0000-template.md](ADR-0000-template.md). Never edit an accepted ADR's decision — supersede it.
