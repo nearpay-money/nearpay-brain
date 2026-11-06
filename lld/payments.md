@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.3 (statement API in Stage 1; list filters instead of `/search`, ADR-0018; see §16) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -38,7 +38,12 @@ Asset amounts are `numeric(78,0)` (base units can exceed 2^63, e.g. 24-decimal t
 ```sql
 create table settlement_contexts (            -- read model of identity (consumer + sync fallback)
   account_id uuid not null, livemode boolean not null, context jsonb not null,
-  context_version timestamptz not null, refreshed_at timestamptz not null, primary key (account_id, livemode));
+  context_version timestamptz not null, refreshed_at timestamptz not null,
+  stale boolean not null default false,       -- an identity event arrived: refresh before trusting it
+  primary key (account_id, livemode));
+
+create table geo_policy (id smallint primary key check (id = 1), version text not null, blocked_countries text[] not null,
+  blocked_regions text[] not null, updated_at timestamptz not null default now());   -- cached compliance policy
 
 create table customers (
   id uuid primary key, account_id uuid not null, livemode boolean not null,
@@ -59,11 +64,12 @@ create table payment_intents (
   destination_snapshot jsonb not null, -- {sd_id, asset_id, type, chain, address, attestation_hash, verification, per_payment_cap_usd_micros}
   fee_snapshot jsonb not null,         -- {schedule_id, rules[], provider_split, bearer}
   settings_snapshot jsonb not null,    -- {late_payments, underpay_tolerance_bps}
-  settlement_asset_id text not null,
+  settlement_asset_id text not null, settlement_decimals smallint not null, settlement_symbol text not null,   -- from rails asset info at creation
   amount_settled numeric(78,0) not null default 0, amount_refunded numeric(78,0) not null default 0,
   amount_refund_pending numeric(78,0) not null default 0,
   succeeded_attempt_id uuid, succeeded_at timestamptz, late boolean not null default false,
-  canceled_at timestamptz, cancellation_reason text, review_reason text,
+  canceled_at timestamptz, cancellation_reason text, review_reason text check (review_reason in ('short_settlement','verification_held')),
+  compliance_review jsonb,             -- {id, status, reason} from evt.compliance.review.* (payment stands; no state change)
   metadata jsonb not null default '{}', sequence integer not null default 0,
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), version integer not null default 0);
 create index pi_account_created on payment_intents (account_id, livemode, created_at desc, id desc);
@@ -91,14 +97,17 @@ create table payment_attempts (
   origin_asset_id text not null, origin_chain text not null,
   refund_to text not null, refund_type text not null check (refund_type in ('origin_chain','intents')),
   payer_wallet text, payer_ip_country char(2),
+  agent boolean not null default false,                -- created by agentpay (internal agent attempt)
   execution_id text,                                   -- rails ex_…
   execution_version integer not null default 0,
   applied_fee_bps integer, route_class text,
   settlement_amount numeric(78,0),                     -- expected output incl. amount tag
   amount_tag numeric(78,0), price_snapshot jsonb,
   deposit jsonb,                                       -- {address, memo, amount_in, min_amount_in, deadline, chain}
+  intents_requirement jsonb,                           -- intents_transfer attempts
   deadline timestamptz, settled_amount numeric(78,0), refunded_amount numeric(78,0),
   evidence jsonb, failure_code text, is_overpayment boolean not null default false,
+  overpayment_reason text check (overpayment_reason in ('duplicate','after_cancel','after_expiry')),
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), version integer not null default 0);
 create index pa_intent on payment_attempts (payment_intent_id);
 create index pa_quoting on payment_attempts (created_at) where status = 'quoting';
@@ -133,7 +142,7 @@ create table balance_transactions (
   type text not null check (type in ('payment','overpayment','refund','fee_adjustment')),
   payment_intent_id uuid, refund_id uuid, payment_attempt_id uuid,
   gross_amount bigint, gross_currency text,
-  settled_amount numeric(78,0) not null, settlement_asset_id text not null,
+  settled_amount numeric(78,0) not null, settlement_asset_id text not null, settlement_decimals smallint not null, settlement_symbol text not null,
   fee_bps integer, fee_amount_est numeric(78,0), fee_asset_id text,
   evidence jsonb not null, created_at timestamptz not null default now());
 create index bt_account_created on balance_transactions (account_id, livemode, created_at desc);
@@ -146,6 +155,9 @@ create table reconciliation_runs (
 
 -- transitions: checkout_session_transitions, payment_intent_transitions, payment_attempt_transitions, refund_transitions (foundations §7)
 ```
+Stage 1 migration creates only the Stage 1 tables (no `customers`, `refunds`, `refund_legs`, `payment_links`, `reconciliation_runs`; `customer_id` has no foreign key until Stage 2).
+
+**Statement display:** a line shows the exact settled amount including the amount tag, e.g. `2.000042 USDC (NEAR)` (decimals and symbol stored with the intent and the line).
 
 Client secrets: `cs_…_secret_<32 base62>`; stored as SHA-256; compared constant-time.
 
@@ -158,17 +170,19 @@ Client secrets: `cs_…_secret_<32 base62>`; stored as SHA-256; compared constan
 | From | Trigger | Guard | To | Side effects (same tx) |
 |---|---|---|---|---|
 | `requires_payment` | attempt → `deposit_detected`/`settling`/`incomplete_deposit` | — | `processing` | event `processing` |
-| `processing` | attempt → `refunded`/`failed`/`expired_unpaid` | no other attempt in `deposit_detected…verifying` | `requires_payment` (session `open`) or `expired` (session `expiring`) | event `payment_failed` (reason from attempt) |
+| `processing` | attempt → `refunded`/`failed`/`expired_unpaid` | no other attempt in `deposit_detected…verifying` | `requires_payment` — also when the session is `expiring` (INV-3: an older attempt may still settle); intent and session become `expired` together only once **every** attempt is terminal (session follow-up below) | event `payment_failed` (reason from attempt) |
 | `requires_payment`/`processing` | attempt → `succeeded` with `settled ≥ expected × (1 − tolerance)` | — | `succeeded` | `amount_settled`, `succeeded_attempt_id`, `late` if session not `open`; session → `complete`; statement `payment`; events `succeeded`, `checkout.session.completed` |
-| `requires_payment`/`processing` | attempt → `succeeded` with short amount | — | `requires_review` (`review_reason='short_settlement'`) | statement `payment` (actual amount); event `requires_review` |
-| any non-terminal | attempt → `held` | — | `requires_review` (`review_reason='verification_held'`) | event `requires_review` |
+| `requires_payment`/`processing` | attempt → `succeeded` with short amount | — | `requires_review` (`review_reason='short_settlement'`) | statement `payment` (actual amount); event `requires_review`. **First settlement wins:** that attempt is the intent's settlement; any later success is an overpayment (`duplicate`) |
+| any non-terminal | attempt → `held` | — | `requires_review` (`review_reason='verification_held'`) | event `requires_review`. A held verification is **not** a settlement: the next verified success of any attempt pays the intent (`requires_review → succeeded`) |
 | `requires_review` | merchant `accept` | — | `succeeded` | session `complete`; events |
 | `requires_review` | merchant `reject` | — | `succeeded` stays false → `requires_payment` if session open else `expired` | refund recommended (Stage 2: auto-create draft refund) |
-| `succeeded`/`canceled`/`expired` | another attempt → `succeeded` | — | unchanged | attempt `is_overpayment`; statement `overpayment`; event `overpaid` (reason `duplicate`, `after_cancel`) |
-| `requires_payment` | merchant `cancel` | no attempt in `deposit_detected…verifying` | `canceled` | hide attempts; session → `expired`; event `canceled` |
+| `succeeded`/`canceled`/`expired`, or `requires_review` after a short settlement | another attempt → `succeeded` | — | unchanged | attempt `is_overpayment`, `overpayment_reason` (`duplicate`, `after_cancel`, `after_expiry`); statement `overpayment`; event `overpaid` |
+| `requires_payment` | merchant `cancel` | no attempt in `deposit_detected…verifying` | `canceled` | hide attempts (live but undetected attempts included: a later settlement is an overpayment `after_cancel`); session → `expired`; event `canceled` |
 | `requires_payment` | session expiry finalisation | all attempts terminal | `expired` | event (internal) |
 
-**CheckoutSession:** `open → expiring` at `expires_at` (job); `expiring → expired` when every attempt is terminal and the intent is not succeeded; `open|expiring → complete` with the intent. Attempt creation requires `open`.
+**CheckoutSession:** `open → expiring` at `expires_at` (job); `expiring → expired` when every attempt is terminal and the intent is neither succeeded nor `requires_review` (a session whose intent is in review stays `expiring`); `open|expiring → complete` with the intent. Attempt creation requires `open`. Merchant `expire` (domain-model §4.1) is allowed while attempts are live but no deposit was detected: those attempts are hidden, and a later settlement is an overpayment `after_expiry`.
+
+**Intent view:** `fee.total_bps` is the fee of the attempt that paid (or was last quoted), `0` before any quote (the spec field is not nullable).
 
 **Refund:** per `domain-model.md` §4.4; `refundable = amount_settled − amount_refunded − amount_refund_pending` under `select … for update` on the intent; `amount_refund_pending` increments on create, moves to `amount_refunded` on success, decrements on fail/cancel.
 
@@ -201,7 +215,7 @@ All `POST` honour `Idempotency-Key` (foundations §7).
 | Method & path | Request → Response | Errors |
 |---|---|---|
 | `GET /v1/checkout/sessions/{id}/public` | → `{id, status, amount, currency, display:{merchant_name_unverified, description}, expires_at, settlement:{asset_id, chain, type}, attempt?}` | `client_secret_invalid` |
-| `GET /v1/checkout/sessions/{id}/public/payment_options?chain=&wallet=` | → `{options:[{origin_asset_id, chain, symbol, estimated_amount_in, route_class, min_deadline_s, available}]}` (indicative, from rails) | |
+| `GET /v1/checkout/sessions/{id}/public/payment_options?chain=&wallet=` | → `{options:[{origin_asset_id, chain, symbol, estimated_amount_in, route_class, min_deadline_s, available}]}` (indicative, from rails with an estimated `amount_out`; options slower than the remaining window are marked `route_too_slow`). No settlement estimate or rails unreachable → empty `options` (the checkout offers the manual path) | |
 | `POST /v1/checkout/sessions/{id}/public/attempts` | `{origin_asset_id, refund_to?, payer_wallet?, method: route_quote\|intents_transfer, turnstile_token}` — `route_quote` requires `refund_to` (wallet path: the connected address); `intents_transfer` requires `payer_wallet` (the payer's Intents account; refunds go there) → attempt `{id, status, method, deposit?:{address, memo, amount_in, min_amount_in, deadline, chain}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}, attestation_ticket}` | `session_not_open`, `attempt_in_flight`, `too_many_attempts`, `route_too_slow`, `refund_address_invalid`, `screening_blocked`, `geo_blocked`, `rail_unavailable`, `turnstile_failed` |
 | `POST …/attempts/{pa}/deposit_tx` | `{tx_hash}` → `202` | |
 | `POST …/attempts/{pa}/sent` | → `202` (deposit signal) | |
@@ -237,21 +251,24 @@ Payment-link, customer and statement-line changes emit no events in v1 (no consu
 |---|---|
 | `evt.rails.execution.updated` / `.settled` / `.refunded` / `.failed` / `.held` | `applyExecutionUpdate` (version-checked) |
 | `evt.identity.account.updated`, `evt.identity.settlement_destination.*` | refresh `settlement_contexts` |
-| `evt.compliance.review.opened` (subject = payment) | set intent `metadata.review` flag + event for dashboard (no state change; payment stands) |
+| `evt.compliance.review.opened` · `.closed` (subject = payment intent, or `execution` mapped to the intent through the attempt's `execution_id`) | set intent `compliance_review` (no state change; payment stands) |
 | `evt.compliance.policy.updated` | refresh cached geo policy (`GET /internal/geo-policy`) |
 
 ## 8. Algorithms
 
 ### 8.1 Create checkout session
 ```
-ctx = settlementContext(acct, lm)          // read model; if missing or older than 5 min → sync GET identity (1 s), upsert
+ctx = settlementContext(acct, lm)          // read model; if missing, stale or older than 5 min → sync GET identity (1 s), upsert
 if lm and not ctx.account.live_enabled → 403 account_not_live
+fiat currency ∉ NP_PRICING_CURRENCIES (Stage 1: usd; asset pricing is always accepted) → 400 currency_unsupported
 dest = param ?? ctx.defaults[pricing_asset] ?? ctx.defaults['*'];  dest.status == active else 409 destination_not_active
-min = rails.destinationMinimum(dest) (cached 1 h) → convert to pricing currency with indicative price; amount < min → 422
-if dest.verification == 'unverified' and usd(amount) > cap → 422 amount_above_unverified_cap
+min = rails.destinationMinimum(dest) (cached 1 h) → compared in USD micros; amount < min → 422
+    rails unreachable → check skipped (economic guard only; rails re-checks on quote)
+if dest.verification == 'unverified' and (usd(amount) > cap or the price cannot be valued in USD) → 422 amount_above_unverified_cap
+asset info (decimals, symbol) of the settlement asset from rails → stored on the intent
 if ui_mode == 'embedded' and allowed_origins empty → 400 allowed_origins_required (https origins; http://localhost:* only in test mode)
 tx: insert intent(requires_payment, snapshots: destination, fee(schedule+bearer), settings) + session(open, secret hash)
-    + transitions + outbox(created ×2)
+    + transitions + outbox(created ×2) + job session.expire at expires_at (dedupe 'session.expire:<id>')
 return session + url = PAY_ORIGIN + '/c/' + cs_id + '#' + client_secret   (fragment never reaches servers)
 ```
 
@@ -259,6 +276,7 @@ return session + url = PAY_ORIGIN + '/c/' + cs_id + '#' + client_secret   (fragm
 ```
 verify client secret; verify Turnstile (skip if Turnstile outage flag → stricter IP limit)
 geo: country = CF-IPCountry (+ cf-region-code) forwarded by the gateway; blocked per cached compliance geo policy → 403 geo_blocked (local: no header → allowed)
+     policy never loaded and compliance unreachable → 503 screening_unavailable (fail closed)
 tx1 (lock session+intent FOR UPDATE):
   session.status == open; intent.status in (requires_payment, processing)
   no attempt in (deposit_detected, incomplete_deposit, settling, verifying) → else 409 attempt_in_flight
@@ -269,7 +287,10 @@ commit
 exec = rails.createExecution(idem='attempt:'+id, {kind:'payment', method, account, lm, origin:{asset, chain, refund_to, refund_type},
         destination: intent.destination_snapshot, pricing:{amount,currency|asset}, fee: intent.fee_snapshot,
         deadline_cap: settings.late_payments ? null : session.expires_at, slippage_bps: default})   // 8 s timeout
-  on 4xx → attempt failed(failure_code) + return error;  on timeout → leave quoting (recovery job) + 503 rail_unavailable
+  error envelope → definitive: attempt failed(failure_code) + return error, except api_error / idempotency_in_progress /
+      rate_limited (attempt stays quoting → recovery job); name mapping: deadline_too_short → route_too_slow,
+      invalid_request on origin.refund_to → refund_address_invalid
+  timeout → leave quoting (recovery job) + 503 rail_unavailable
 tx2: attempt ← exec (awaiting_deposit, deposit, settlement_amount, tag, fee bps, route_class, price_snapshot, deadline,
      execution_id, execution_version); publish SSE
 ticket = Ed25519(payments_ticket_key, JCS({attempt_id, livemode, deposit_key, exp: now+15 min}))   // rate-gates sentinel (L-SN-03)
@@ -306,25 +327,30 @@ execution settled → refund succeeded (amount_refunded += amount, pending −= 
 
 | Kind | Trigger | Behaviour |
 |---|---|---|
-| `session.expire` | at `expires_at` (dedupe `cs:<id>:expire`) | `open → expiring`; hide visible attempts; if no non-terminal attempt → `expired` |
+| `session.expire` | at `expires_at` (dedupe `session.expire:<id>`) | `open → expiring`; hide visible attempts; if no non-terminal attempt and the intent is not in review → `expired` |
 | `attempt.quoting_recovery` | every 15 s scan `status='quoting' and created_at < now()-20 s` | re-call rails with same idempotency key; after 2 min → `failed(rail_timeout)` |
-| `context.refresh` | every 5 min for active accounts | sync settlement contexts (backstop to events) |
+| `context.refresh` | on identity events (the consumer marks the context `stale` and enqueues the job) | sync the account's settlement context |
+| `context.sweep` | every 5 min | refresh stale contexts and contexts older than 5 min of accounts with `open`/`expiring` sessions (backstop to events) |
 | `reconcile.daily` | 02:00 UTC per account with activity | compare statement vs rails `GET /internal/evidence?account&day`; write run; diff → ops case (RB-05) |
-| `purge.*` | hourly | idempotency, inbox, published outbox |
+| `kit.purge` | hourly | idempotency, inbox, published outbox |
 
 ## 10. Integrations
 
 | Target | Timeout | Retries | Breaker | Failure |
 |---|---|---|---|---|
 | rails `POST /internal/executions` | 8 s | 0 inline (recovery job retries) | per account? no — global | `503 rail_unavailable` |
-| rails indicative options | 2 s | 1 | yes | options marked `available:false` |
+| rails indicative options | 2 s | 1 | yes | empty options (manual path) |
+| rails deposit tx / signals | 2 s | 1 (idempotent) | yes | `503` |
+| sandbox (test mode) | 2 s | 1 | no | `503` |
+| rails reads (minimums, chain profiles, assets) | 2 s | 1 | yes | minimum check skipped (§8.1) |
+| compliance geo policy | 1 s | 1 | yes | cached policy; never loaded → `503 screening_unavailable` |
 | identity settlement context | 1 s | 1 | yes | use cached context ≤ 1 h old; else `503` |
 | agentpay `POST /internal/relay` | 5 s | 0 (idempotent on payload hash; client may resubmit) | yes | `503` |
 | Turnstile siteverify | 2 s | 1 | yes | outage flag → stricter per-IP limit (F-12) |
 
 ## 11. Configuration
 
-`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_TICKET_SIGNING_KEY_FILE` (Ed25519; public key configured in sentinel), `NP_SANDBOX_BASE_URL`, `NP_COMPLIANCE_URL`, `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE`, `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`.
+`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_TICKET_SIGNING_KEY_FILE` (Ed25519; public key configured in sentinel), `NP_SANDBOX_BASE_URL`, `NP_COMPLIANCE_URL`, `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE` (unset → Turnstile disabled), `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PRICING_CURRENCIES` (Stage 1: `usd`; `currency: asset` is always accepted), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`, `NP_IDENTITY_URL`, `NP_VALKEY_URL` (SSE fan-out `cs:<uuid>`; in-process without it).
 
 ## 12. Security
 

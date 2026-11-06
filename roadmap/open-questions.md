@@ -1,12 +1,12 @@
 # Open Questions and Spikes
 
-> Version 1.2 (OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05) · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
 | ID | Question | Why it matters | Resolve by | Blocks |
 |---|---|---|---|---|
-| **SP-01** | Quote signatures are verifiable via `verifyQuoteSignature()` in `@defuse-protocol/one-click-sdk-typescript` ≥ 0.1.24 — confirm algorithm/key from SDK source, browser bundle size, and whether browsers can call `/v0/status` (CORS) | Client-side verification of deposit instructions (T-03 layer 4) | Read SDK source; test | Stage 1 (sentinel covers if unresolved) |
+| ~~**SP-01**~~ ✔ | Quote signatures are verifiable via `verifyQuoteSignature()` in `@defuse-protocol/one-click-sdk-typescript` ≥ 0.1.24 — confirm algorithm/key from SDK source, browser bundle size, and whether browsers can call `/v0/status` (CORS) | Client-side verification of deposit instructions (T-03 layer 4) | Read SDK source; test | Stage 1 (sentinel covers if unresolved) |
 | **SP-02** | Does `EXACT_OUTPUT` always deliver exactly `amountOut` (no surplus/shortfall)? | Amount tags, evidence checks | Mainnet tests + vendor confirmation | P0 |
 | **SP-03** | `INCOMPLETE_DEPOSIT`: are top-ups to the same address accepted? Behaviour for deposits after `timeWhenInactive`? | Underpay UX | Vendor + tests | P1 |
 | **SP-04** | Partner rate limits for `/v0/quote` and `/v0/status`; any webhooks/streams for partners? Meaning of `KNOWN_DEPOSIT_TX`? | Capacity (D), polling design | Partner agreement | P0 |
@@ -15,12 +15,18 @@
 | **SP-07** | Gas per `transfer` intent and failure isolation inside one `execute_intents` batch; realistic shard headroom | Agent throughput (A), batching | Mainnet measurements | P2 |
 | **SP-08** | Can the treasury Intents account be controlled by a multisig contract calling Verifier withdraw methods? | Treasury custody design | Contract test | P1 |
 | **SP-09** | netcup: IPv6 per server, root server availability per site, Cloud VLAN MTU/price, AUP for payment businesses | Infra build | netcup support | P0 |
-| **SP-10** | Explorer API: filter semantics for time windows (created vs updated) and `referral` reliability | Explorer feed design | Tests | P1 |
+| **SP-10** | Explorer API: filter semantics for time windows (created vs updated) and `referral` reliability | Explorer feed design | Tests (contract read 2026-11-06: rows have no `updatedAt` and the time basis is undocumented; reference/landscape.md §2) | P1 |
 | **SP-11** | x402 PR #3370 status; upstream appetite for `intents-transfer` | Interop | x402 foundation | P2 |
 | **SP-12** | Self-hosted NEAR RPC node sizing on netcup | RPC independence | Benchmark | P3 |
 | **SP-13** | Amount-tag behaviour per asset (decimals, minimum transfer units, chains that round) | Watcher attribution | Tests per chain | P1 |
-| **SP-14** | Exact DIP-4 `transfer` event and NEP-245 `mt_transfer` log shapes emitted by `intents.near` (incl. `memo`) on mainnet | Indexer attribution by binding/tag | Record mainnet receipts as fixtures | Stage 1 |
-| **SP-15** | OFAC SDN advanced XML source URL and digital-currency feature identifiers | Local sanctions list (compliance Stage 1) | Download + parse fixture | Stage 1 |
+| ~~**SP-14**~~ ✔ | Exact DIP-4 `transfer` event and NEP-245 `mt_transfer` log shapes emitted by `intents.near` (incl. `memo`) on mainnet | Indexer attribution by binding/tag | Record mainnet receipts as fixtures | Stage 1 |
+| ~~**SP-15**~~ ✔ | OFAC SDN advanced XML source URL and digital-currency feature identifiers | Local sanctions list (compliance Stage 1) | Download + parse fixture | Stage 1 |
+
+**SP-01 write-up (2026-11-05, step 1.2).** `verifyQuoteSignature` of `@defuse-protocol/one-click-sdk-typescript` verifies 1Click quotes with an Ed25519 key pinned in the SDK (0.1.26: `ed25519:reYaWhvwu8Jzo3WUM3zhn6VrhuMEF4eADL17qtRVifc`). The signed request sets `appFees: undefined`, so appFees are **not** covered and are checked separately; 1Click echoes them split 50/50 with its own account (rails §8.1, sentinel R6). Rails and sentinel verify server-side; browser bundle size and `/v0/status` CORS were not examined, because the checkout relies on sentinel's co-signature (T-03 layer 4) as planned.
+
+**SP-14 write-up (2026-11-06, step 1.2).** Recorded from mainnet blocks 223270688–223270709 (neardata): the DIP-4 `transfer` event is `{intent_hash, account_id, receiver_id, tokens{asset: amount}, memo?}`; the NEP-245 `mt_transfer` of a transfer intent carries no memo. Binding attribution uses the DIP-4 memo (foundations §14 corrected, rails §8.6); the sandbox emits the same shapes. Fixtures: `nearpay-rails/test/fixtures/near/`.
+
+**SP-15 write-up (step 1.2).** Source `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML` (redirects to a signed S3 URL; ~128 MB). Digital-currency addresses are the features named "Digital Currency Address - <CODE>"; their type ids are read from the document itself rather than hard-coded (compliance §7).
 
 ## Contract gaps found while implementing
 
@@ -32,6 +38,55 @@
 **OQ-T-01 write-up.** The owner chose typed list filters over a Stripe-style query language: one validated mechanism, no parser, each filter backed by a deliberate index. `GET /v1/payment_intents` adds `amount`, `currency`, `asset_id` and `metadata[key]` filters in Stage 2; `/search` is removed from the conventions and the payments LLD.
 
 **OQ-T-02 write-up.** The owner chose to shape these endpoints with the Stage 2 console screens rather than guess them now. Stage 1 operators use `nearpay-testbed/ops` (in-container CLI). The KYB decision and kill-switch endpoints stay in the spec as already specified.
+
+## Planned `@nearpay/spec` 0.1.5 (additive) — change requests from steps 1.2 and 1.3
+
+Collected from the builders of steps 1.2/1.3 (2026-11-06). **None is decided yet**; each needs a spec PR (additive within 0.1.x) and a consumer bump, or is rejected. Items marked *(kit)*, *(sandbox)* or *(deploy)* are not spec changes and are listed so they are decided in the same pass.
+
+**From the dashboard and `@nearpay/node`**
+
+| ID | Request | Why |
+|---|---|---|
+| CR-15-01 | `GET /v1/auth/session` → `DashboardSession` | A reload or new tab cannot recover the CSRF token; the dashboard keeps the session in `sessionStorage` (dashboard §1). Identity can re-issue the CSRF token from `csrf_enc` |
+| CR-15-02 | `GET /v1/webhook_endpoints/{id}/deliveries` (delivery log) | Endpoint page shows only the test-ping result today; coordinate with webhooks (LLD lists it as Stage 2) |
+| CR-15-03 | `POST /v1/settlement_destinations/{id}/challenge` | Re-issue an attestation challenge for a destination left in `pending_verification` (today: disable and re-add) |
+| CR-15-04 | Optional: `fingerprint` on the payment intent's destination snapshot; typed `Event.data.object` union | The dashboard computes the fingerprint client-side; `@nearpay/node` derives the event union itself |
+
+**From the checkout and `nearpay-js`**
+
+| ID | Request | Why |
+|---|---|---|
+| CR-15-05 | `PublicCheckoutSession.payment_intent: id("pi")` | Embedded `np:complete` needs the intent id; today it is known only from an SSE `intent` event (`null` when the page only polled) |
+| CR-15-06 | Optional `PaymentOption.token: {standard: "erc20" \| "native" \| "nep141", address \| null} \| null` | The wallet path derives the EVM token contract from omft asset-id naming, so non-omft EVM assets are manual-path only |
+| CR-15-07 | (sentinel, later) attest the origin asset's `decimals` / `symbol` with the deposit | The checkout displays `amount_in` with decimals from the unattested payment options |
+
+**From webhooks**
+
+| ID | Request | Why |
+|---|---|---|
+| CR-15-08 | `enabled_events` items as `z.string()` (max 100) on create/update endpoint, or drop `event_type_unknown` from the routes | Today an unknown type is `400 invalid_request` before the handler runs; `event_type_unknown` is unreachable (webhooks §5) |
+| CR-15-09 | `sequence` on `CheckoutSession` and `AgentPayment` (public and bus objects) | api-conventions §9 requires it; webhooks fills it from `aggregate.version` meanwhile |
+| CR-15-10 | Optional: `ping` in `WebhookTypeSchema` | Lets merchants subscribe to `ping` (harmless; it is never fanned out) |
+
+**From `nearpay-agentkit` and `nearpay-testbed`**
+
+| ID | Request | Why |
+|---|---|---|
+| CR-15-11 | Optional absolute expiry (`extra.deadline` / `expiresAt`) on `X402IntentsTransferExtra` | Requirements carry only `maxTimeoutSeconds`; agents sign `now + maxTimeoutSeconds/2` to stay inside the window |
+| CR-15-12 | `SettleResponse.replayed?: boolean` (also requested by agentpay) | Settle is idempotent on the payload hash, so one payment can be delivered several times across merchant replicas |
+| CR-15-13 | Tolerant parsing of open enums for SDKs | `openEnum` is a plain `z.enum`; api-conventions §5 says clients tolerate new values (foundations §3) |
+| CR-15-14 | Funding a sandbox Intents balance: sandbox ops CLI `intents-fund` *(sandbox; no spec change, preferred by the requester)* vs a test-helper route | The demo agent needs a test balance and there is no public route. State: `seed.sh data` currently uses the sandbox ops CLI (`nearpay-sandbox` 313739e, step 1.4) |
+
+**From agentpay**
+
+| ID | Request | Why |
+|---|---|---|
+| CR-15-12 | `SettleResponse.replayed?: boolean` | Same as above |
+| CR-15-15 | Internal payments route to verify a client secret / read the session for agentpay (e.g. `GET /internal/checkout_sessions/{id}/payer`) | Today agentpay calls payments' public session route with the payer's secret (agentpay §5) |
+| CR-15-16 | *(kit)* intents: send an already-signed tx and return the outcome block hash; http client `call` with extra headers | `executeIntents` loses the tx hash on timeout; agentpay works around both (foundations §4) |
+| CR-15-17 | *(sandbox)* tx-status route | A test-mode execute that fails in transport is requeued and then hits `nonce_used` (agentpay §7) |
+
+**Deploy follow-ups reported with these requests** *(deploy)*: nginx per-response CSP nonce for the checkout and dashboard `index.html` (applied in `nearpay-deploy` 1a9a9c4, platform §1); agentpay and webhooks-dispatcher `depends_on` valkey, batcher `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` with owner-provided `relayer_key_1…4`, `NP_WEBHOOK_SIGNING_KID` from `keys.env` (open, platform §1.2). Agentpay's kill switch also blocks live checkout relays — a conservative reading to revisit (agentpay §8).
 
 ## Business
 
