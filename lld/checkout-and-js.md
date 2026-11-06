@@ -1,6 +1,6 @@
 # LLD — `nearpay-checkout` and `nearpay-js`
 
-> Version 1.3 (step 1.3 implementation findings folded: build constants and CSP §2, UI states §4, rules §5, protocol and API §6, i18n and budget §7, tests §8, open items §10) · Version 1.1 audited (`audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
+> Version 1.4 (step 1.4, spec 0.1.5: tolerant response parsing §3, `np:complete` from `PublicCheckoutSession.payment_intent` §6) · Version 1.3 (step 1.3 implementation findings folded: build constants and CSP §2, UI states §4, rules §5, protocol and API §6, i18n and budget §7, tests §8, open items §10) · Version 1.1 audited (`audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -35,6 +35,7 @@ src/lib/api/                    typed client from @nearpay/spec (public payer ro
 src/lib/integrity/              sentinel verification (JCS + Ed25519), fingerprint rendering
 src/wallets/near|evm|solana/    tx builders
 ```
+Payer responses and stream events are parsed with the spec's `safeParseTolerant` (spec 0.1.5, foundations §3): unknown open-enum values (session, intent, attempt statuses) are kept verbatim; closed enums, literals, shapes and missing required fields (e.g. `payment_intent`) fail with `invalid_response`. This replaced step 1.3's hand-rolled parse, which also let unknown closed-enum values through.
 
 ## 4. UI state machine
 
@@ -74,7 +75,7 @@ stateDiagram-v2
    - EVM ERC-20: `transfer(depositAddress, amount_in)` on the token contract; enforce `chainId` switch; native asset: value transfer.
    - NEAR NEP-141: check `storage_balance_of(deposit)`; batch `storage_deposit` (if needed) + `ft_transfer({receiver_id: deposit, amount: amount_in, memo})` via NEAR Connect `signAndSendTransactions`; wNEAR from native NEAR: `near_deposit` + transfer in the same batch.
    - Intents balance (`intents_transfer` attempts): build the Verifier message (foundations §14) from the attested requirement; NEAR wallets sign NEP-413 (`signMessage({message, recipient:'intents.near', nonce})`); EVM wallets sign ERC-191 (`personal_sign` of the payload string); submit to `…/attempts/{pa}/signed_intent`.
-   - Wallet assets: EVM only for omft-bridged assets (`nep141:<prefix>-0x<contract>.omft.near`, native `nep141:<prefix>.omft.near`) whose prefix belongs to the option's chain (eth/base/arb/gnosis); NEAR for NEP-141 token accounts; `wrap.near` always wraps the full amount from native NEAR. Other assets are manual-path only (a typed token field on payment options is requested for spec 0.1.5).
+   - Wallet assets: EVM only for omft-bridged assets (`nep141:<prefix>-0x<contract>.omft.near`, native `nep141:<prefix>.omft.near`) whose prefix belongs to the option's chain (eth/base/arb/gnosis); NEAR for NEP-141 token accounts; `wrap.near` always wraps the full amount from native NEAR. Other assets are manual-path only (a typed token field on payment options is requested: CR-15-06, not in spec 0.1.5).
    - Intents signing in test mode uses the sandbox salt `5a0dbe11`, never a mainnet salt, so a test payload cannot execute on mainnet.
    - After broadcast → `…/deposit_tx {tx_hash}`. Failures of `submitDepositTx` / `signalDepositSent` are ignored (detection works without them).
 5. **Manual path guards:** network name + icon above the address; checkbox "I'm sending on <network>"; memo shown first with checkbox "I included the memo" when present; address, amount and QR are revealed only after the checkboxes are ticked, and "I've sent it" stays disabled until then; QR encodes EIP-681 for EVM ERC-20s / plain address otherwise (native assets included); refund address required, validated per chain, warning "use a wallet you control, not an exchange deposit address".
@@ -90,7 +91,7 @@ stateDiagram-v2
 | parent → iframe | `np:init` | `{v:1, appearance:{theme, accent, radius}, locale}` — (re)posted to `PAY_ORIGIN` on frame load and every 250 ms until `np:ready` (≤ 40 times) |
 | iframe → parent | `np:ready` | `{v:1}` |
 | iframe → parent | `np:resize` | `{height}` (clamped to 120–4000 px by the parent) |
-| iframe → parent | `np:complete` | `{session_id, payment_intent_id}` — delivered once, only for the mounted session; `payment_intent_id` may be `null` (the checkout learns the intent id only from the SSE `intent` event; `PublicCheckoutSession.payment_intent` is requested for spec 0.1.5) |
+| iframe → parent | `np:complete` | `{session_id, payment_intent_id}` — delivered once, only for the mounted session; since step 1.4 the checkout sets `payment_intent_id` from `PublicCheckoutSession.payment_intent` (spec 0.1.5), so it is never `null`, even when the page only polled. The protocol type stays `string \| null` for older checkouts |
 | iframe → parent | `np:error` | `{code, message}` |
 | iframe → parent | `np:close` | `{}` |
 

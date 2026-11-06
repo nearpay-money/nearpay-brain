@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -23,11 +23,13 @@ Processes: `node dist/main.js api|batcher|migrate|healthcheck`.
 {"scheme":"exact","network":"near:mainnet","amount":"10000","asset":"nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
  "payTo":"merchant.near","maxTimeoutSeconds":120,
  "extra":{"assetTransferMethod":"intents-transfer","paymentFlow":"authorization",
-          "fee":{"to":"treasury.nearpay.near","amount":"25"},"binding":"np1:…","verifyingContract":"intents.near"}}
+          "fee":{"to":"treasury.nearpay.near","amount":"25"},"binding":"np1:…","verifyingContract":"intents.near",
+          "deadline":"2026-11-07T12:02:00.000Z"}}
 ```
+`extra.deadline` (spec 0.1.5, optional on the wire) is the binding's `expires_at` in RFC 3339 — the absolute expiry of the issued requirement.
 **PaymentPayload.payload:** `{"signed": <MultiPayload>}` (foundations §14) whose message contains exactly two intents, in order: `transfer(receiver_id=payTo, tokens={asset: amount}, memo=binding)` and `transfer(receiver_id=fee.to, tokens={asset: fee.amount}, memo=binding)`; `deadline ≤ issued_at + maxTimeoutSeconds`; `verifying_contract = intents.near`.
 **`binding`** = `np1:` + base58(sha256(JCS({account_id, resource_url, payTo, asset, amount, fee, nonce16, expires_at}))); stored server-side, single use. Requirements are issued **per 402 response** (never cached and shared between clients); issuance is rate-limited per merchant (default 200/s) and expires after `maxTimeoutSeconds`.
-**Settlement response:** `{"success":true,"transaction":"<NEAR tx hash>","network":"near:mainnet","payer":"<signer_id>","amount":"10000"}`.
+**Settlement response:** `{"success":true,"transaction":"<NEAR tx hash>","network":"near:mainnet","payer":"<signer_id>","amount":"10000"}`, plus `"replayed":true` when an earlier settle response already carried this final outcome (§7).
 
 `exact` + `near-intents` (cross-chain upfront, PR #3370 shape) is Stage 3: `/x402/verify` with `payload.type='quote'` creates a rails execution (owner `agentpay`), `/x402/settle` with `payload.type='deposit'` + `txHash` waits on rails evidence.
 
@@ -61,7 +63,8 @@ create table agent_payments (
   pay_to text, fee_to text, standard text, deadline timestamptz, resource_url text, checkout_session_id uuid,
   solo boolean not null default false,     -- requeued for a size-1 batch after a split
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(), settled_at timestamptz,
-  version integer not null default 0);
+  version integer not null default 0,
+  result_reported_at timestamptz);          -- migration 0002: first settle response with the final outcome (§7); not on the object, no version bump
 create index ap_queue on agent_payments (livemode, created_at) where status = 'queued';
 create index ap_account on agent_payments (account_id, livemode, created_at desc);
 create unique index ap_binding_live on agent_payments (binding) where status in ('verified','queued','submitted','settled');
@@ -94,13 +97,13 @@ Purges: unconsumed x402 requirements expired more than 24 h; checkout requiremen
 | `GET /x402/supported` | anonymous | `{kinds:[{x402Version:2,scheme:'exact',network:'near:mainnet',extra:{assetTransferMethod:'intents-transfer'}}], extensions:[], signers:{'near:*':[relayer account]}}` | |
 | `POST /x402/requirements` | secret/restricted key `agentpay.facilitate` | `{resource:{url, description?, mimeType?}, amount, asset_id?, pay_to?, max_timeout_s? (30–300, default 120)}` → `{x402Version:2, accepts:[PaymentRequirements], resource}` (ready to base64 into `PAYMENT-REQUIRED`) | `destination_not_intents_account`, `asset_unsupported`, `amount_below_minimum` |
 | `POST /x402/verify` | same | `{x402Version, paymentPayload, paymentRequirements}` → `{isValid, payer?, invalidReason?, invalidMessage?}` | `invalid_x402_version`, `invalid_scheme`, `invalid_network`, `invalid_payment_requirements`, `requirement_unknown`, `requirement_expired`, `requirement_consumed`, `invalid_payload`, `invalid_signature`, `recipient_mismatch`, `amount_mismatch`, `deadline_invalid`, `insufficient_funds`, `nonce_used`, `payer_blocked`, `quota_exceeded` |
-| `POST /x402/settle` | same | same body → `{success, transaction, network, payer, amount?, errorReason?}`; idempotent on payload hash | `settlement_pending` (non-terminal), any verify reason, `unexpected_settle_error` |
-| `GET /v1/agent_payments` · `/{id}` | `agentpay.facilitate` or session | list/get | |
+| `POST /x402/settle` | same | same body → `{success, transaction, network, payer, amount?, errorReason?, replayed?}`; idempotent on payload hash (`replayed`, spec 0.1.5: §7) | `settlement_pending` (non-terminal), any verify reason, `unexpected_settle_error` |
+| `GET /v1/agent_payments` · `/{id}` | `agentpay.facilitate` or session | list/get; `sequence` (spec 0.1.5) = the row's `version`, the same value the events carry as `aggregate.version` | |
 | `POST /v1/checkout/sessions/{id}/agent_pay` | anonymous + `X-NearPay-Client-Secret` | `{signed}` → `{status:'submitted', attempt}`; agent obtains requirements from `POST …/agent_pay/requirements`; the payload is matched to the handed-out requirement through `checkout_requirements` | as verify + `session_not_open` |
 | `POST /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | `{payer: <agent Intents account>}` → PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) + `attempt_id` + `attestation_ticket` from payments `POST /internal/checkout_sessions/{id}/agent_attempts` (creates or reuses the attempt); `@nearpay/agent-signer` verifies a sentinel co-signature before signing (same two-party release as the human checkout) | `session_not_open`, `too_many_attempts`, `destination_not_intents_account` |
 | `POST /internal/relay` | payments (`agentpay.relay`) | `{execution_id, binding, signed}` → `202 {agent_payment_id}` | `intent_invalid`, `insufficient_balance` |
 
-**Client secret on the checkout routes:** agentpay cannot check payments' client secrets. It calls payments' public `GET /v1/checkout/sessions/{id}/public` with the caller's `X-NearPay-Client-Secret` (no service token); that read also gives the session status and the `PayerAttempt` returned by `agent_pay`. This is the Stage 1 path; an internal payments route for it is requested for spec 0.1.5 (`roadmap/open-questions.md`).
+**Client secret on the checkout routes:** agentpay cannot check payments' client secrets. It calls payments' public `GET /v1/checkout/sessions/{id}/public` with the caller's `X-NearPay-Client-Secret` (no service token); that read also gives the session status and the `PayerAttempt` returned by `agent_pay`. This is the Stage 1 path; an internal payments route for it is requested (CR-15-15, not in spec 0.1.5; `roadmap/open-questions.md`).
 
 **`/internal/relay` validation** uses rails `GET /internal/executions/{id}`: `method = intents_transfer`, `intents_requirement.binding` equal, `state = awaiting_deposit`; then the same exact-two-transfers check, signature check and `simulate_intents` as verify. Account and mode come from the execution. Checkout relays are not screened again (rails screened at execution creation).
 
@@ -109,7 +112,8 @@ Purges: unconsumed x402 requirements expired more than 24 h; checkout requiremen
 1. x402Version == 2; accepted == paymentRequirements (deep-equal, JCS); scheme 'exact'; network 'near:mainnet'
 2. req = issued_requirements[binding] (or rails execution for checkout/refund kinds): exists, account == caller account,
    livemode == caller, not expired, not consumed; the stored terms (payTo, asset, amount, fee, maxTimeout) equal
-   paymentRequirements; if paymentPayload.resource is present its url must equal req.resource_url
+   paymentRequirements, and an echoed extra.deadline equals the issued expires_at (an absent one is accepted:
+   0.1.4 agents strip it); if paymentPayload.resource is present its url must equal req.resource_url
    → else invalid_payment_requirements (resource is optional in the spec, so a payload without it still verifies)
 3. mp = paymentPayload.payload.signed; standard ∈ {nep413, erc191, raw_ed25519}; verify signature locally (@nearpay-internal/intents)
    msg = parse message: verifying_contract == intents.near; deadline in (now+5 s, req.expires_at]; signer_id = payer
@@ -122,7 +126,7 @@ Purges: unconsumed x402 requirements expired more than 24 h; checkout requiremen
    and per payer (NP_PAYER_RATE_PER_S, 10) → quota_exceeded; requirement issuance per merchant: NP_REQUIREMENT_RATE_PER_S (200)
 7. cache verify result by payload_hash for 60 s; return {isValid:true, payer}
 ```
-**Deadlines:** requirements carry no absolute expiry on the wire (only `maxTimeoutSeconds` from issue), so `@nearpay/agent-signer` signs `deadline = now + floor(maxTimeoutSeconds / 2)` to stay inside `(now + 5 s, issued.expires_at]` despite latency and clock skew (an `extra` deadline is requested for spec 0.1.5).
+**Deadlines:** since spec 0.1.5 requirements carry their absolute expiry as `extra.deadline` (= `expires_at`), and `@nearpay/agent-signer` signs exactly that instant as the Verifier deadline (independent of the agent's clock). Requirements without it (facilitators older than 0.1.5) keep the fallback `deadline = now + floor(maxTimeoutSeconds / 2)`, which stays inside `(now + 5 s, issued.expires_at]` despite latency and clock skew. The payload-deadline check of step 3 is unchanged.
 
 **Fee:** `fee_amount = max(ceil(amount × bps / 10 000), min_fee_usd_micros at the asset price (par for USD stablecoins without a price), 1 base unit)` — the floor of 1 keeps the fee transfer non-empty; `amount_below_minimum` when `amount < max(1, minimum fee units)`.
 
@@ -131,11 +135,17 @@ Purges: unconsumed x402 requirements expired more than 24 h; checkout requiremen
 settle: verify (cached ok) → insert agent_payments(queued) on conflict(payload_hash) → return existing outcome if final
         mark requirement consumed (same tx) → wait on Valkey channel 'ap:<id>' up to 8 s (in-process without Valkey)
         a replayed PAYMENT-SIGNATURE gets the same response and never a second agent payment or relay (idempotent on the
-        payload hash); a merchant with several replicas cannot tell a replay from the first delivery, so the resource can be
-        served more than once for one payment — `SettleResponse.replayed` is requested for spec 0.1.5
+        payload hash)
+replayed (spec 0.1.5): the first response that carries the final outcome (settled or failed) claims it —
+        update agent_payments set result_reported_at = now where id = … and result_reported_at is null (two concurrent
+        calls cannot both win); every later response repeats the outcome with replayed: true, so the merchant delivers the
+        resource at most once per settlement. settlement_pending is not a result: it never says replayed and never claims,
+        so "pending, then call again" still delivers once
 statuses: payloads are inserted `queued` (verify and queue in one step; `verified` is unused); a claimed payload moves
         `queued → submitted` when its batch is built (before simulation and sending); `submitted → queued` on abandon/split
         final → {success:true, transaction}; not final → {success:false, errorReason:'settlement_pending', transaction?: tx if submitted}
+sequence: every change bumps agent_payments.version (ledger.updatePayment), including the batcher's bulk tx_hash write
+        after submission (tx_hash is on the object); later writers re-read the row FOR UPDATE
 
 batcher (leader, tick 150 ms):
   batch = select queued order by created_at limit MAX_BATCH (=floor(240 / NP_GAS_PER_PAYLOAD_TGAS)) for update skip locked

@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -41,22 +41,24 @@
 
 ## Planned `@nearpay/spec` 0.1.5 (additive) — change requests from steps 1.2 and 1.3
 
-Collected from the builders of steps 1.2/1.3 (2026-11-06). **None is decided yet**; each needs a spec PR (additive within 0.1.x) and a consumer bump, or is rejected. Items marked *(kit)*, *(sandbox)* or *(deploy)* are not spec changes and are listed so they are decided in the same pass.
+Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR (additive within 0.1.x) and a consumer bump, or is rejected. Items marked *(kit)*, *(sandbox)* or *(deploy)* are not spec changes and are listed so they are decided in the same pass.
+
+**0.1.5 write-up (step 1.4).** Released and implemented by producers and readers (`nearpay-spec/CHANGELOG.md`): CR-15-01 (identity §6, dashboard §1), CR-15-02 (webhooks §5, `whd_` prefix), CR-15-03 (identity §5–§6), CR-15-05 (payments §6.2, checkout §6), CR-15-08 (webhooks §5), CR-15-09 (payments §6.1, agentpay §5/§7, webhooks §4), CR-15-11 and CR-15-12 (agentpay §3/§6/§7, sdks-and-tools §2), CR-15-13 (foundations §3). Still open: CR-15-04, 06, 07, 10 and 15; CR-15-14, 16 and 17 are not spec changes.
 
 **From the dashboard and `@nearpay/node`**
 
 | ID | Request | Why |
 |---|---|---|
-| CR-15-01 | `GET /v1/auth/session` → `DashboardSession` | A reload or new tab cannot recover the CSRF token; the dashboard keeps the session in `sessionStorage` (dashboard §1). Identity can re-issue the CSRF token from `csrf_enc` |
-| CR-15-02 | `GET /v1/webhook_endpoints/{id}/deliveries` (delivery log) | Endpoint page shows only the test-ping result today; coordinate with webhooks (LLD lists it as Stage 2) |
-| CR-15-03 | `POST /v1/settlement_destinations/{id}/challenge` | Re-issue an attestation challenge for a destination left in `pending_verification` (today: disable and re-add) |
+| ~~CR-15-01~~ ✔ 0.1.5 | `GET /v1/auth/session` → `DashboardSession` | A reload or new tab cannot recover the CSRF token; the dashboard keeps the session in `sessionStorage` (dashboard §1). Identity can re-issue the CSRF token from `csrf_enc` |
+| ~~CR-15-02~~ ✔ 0.1.5 | `GET /v1/webhook_endpoints/{id}/deliveries` (delivery log) | Endpoint page shows only the test-ping result today; coordinate with webhooks (LLD lists it as Stage 2) |
+| ~~CR-15-03~~ ✔ 0.1.5 | `POST /v1/settlement_destinations/{id}/challenge` | Re-issue an attestation challenge for a destination left in `pending_verification` (today: disable and re-add) |
 | CR-15-04 | Optional: `fingerprint` on the payment intent's destination snapshot; typed `Event.data.object` union | The dashboard computes the fingerprint client-side; `@nearpay/node` derives the event union itself |
 
 **From the checkout and `nearpay-js`**
 
 | ID | Request | Why |
 |---|---|---|
-| CR-15-05 | `PublicCheckoutSession.payment_intent: id("pi")` | Embedded `np:complete` needs the intent id; today it is known only from an SSE `intent` event (`null` when the page only polled) |
+| ~~CR-15-05~~ ✔ 0.1.5 | `PublicCheckoutSession.payment_intent: id("pi")` | Embedded `np:complete` needs the intent id; today it is known only from an SSE `intent` event (`null` when the page only polled) |
 | CR-15-06 | Optional `PaymentOption.token: {standard: "erc20" \| "native" \| "nep141", address \| null} \| null` | The wallet path derives the EVM token contract from omft asset-id naming, so non-omft EVM assets are manual-path only |
 | CR-15-07 | (sentinel, later) attest the origin asset's `decimals` / `symbol` with the deposit | The checkout displays `amount_in` with decimals from the unattested payment options |
 
@@ -64,29 +66,29 @@ Collected from the builders of steps 1.2/1.3 (2026-11-06). **None is decided yet
 
 | ID | Request | Why |
 |---|---|---|
-| CR-15-08 | `enabled_events` items as `z.string()` (max 100) on create/update endpoint, or drop `event_type_unknown` from the routes | Today an unknown type is `400 invalid_request` before the handler runs; `event_type_unknown` is unreachable (webhooks §5) |
-| CR-15-09 | `sequence` on `CheckoutSession` and `AgentPayment` (public and bus objects) | api-conventions §9 requires it; webhooks fills it from `aggregate.version` meanwhile |
+| ~~CR-15-08~~ ✔ 0.1.5 | `enabled_events` items as `z.string()` (max 100) on create/update endpoint, or drop `event_type_unknown` from the routes | Today an unknown type is `400 invalid_request` before the handler runs; `event_type_unknown` is unreachable (webhooks §5) |
+| ~~CR-15-09~~ ✔ 0.1.5 | `sequence` on `CheckoutSession` and `AgentPayment` (public and bus objects) | api-conventions §9 requires it; webhooks fills it from `aggregate.version` meanwhile |
 | CR-15-10 | Optional: `ping` in `WebhookTypeSchema` | Lets merchants subscribe to `ping` (harmless; it is never fanned out) |
 
 **From `nearpay-agentkit` and `nearpay-testbed`**
 
 | ID | Request | Why |
 |---|---|---|
-| CR-15-11 | Optional absolute expiry (`extra.deadline` / `expiresAt`) on `X402IntentsTransferExtra` | Requirements carry only `maxTimeoutSeconds`; agents sign `now + maxTimeoutSeconds/2` to stay inside the window |
-| CR-15-12 | `SettleResponse.replayed?: boolean` (also requested by agentpay) | Settle is idempotent on the payload hash, so one payment can be delivered several times across merchant replicas |
-| CR-15-13 | Tolerant parsing of open enums for SDKs | `openEnum` is a plain `z.enum`; api-conventions §5 says clients tolerate new values (foundations §3) |
+| ~~CR-15-11~~ ✔ 0.1.5 | Optional absolute expiry (`extra.deadline` / `expiresAt`) on `X402IntentsTransferExtra` | Requirements carry only `maxTimeoutSeconds`; agents sign `now + maxTimeoutSeconds/2` to stay inside the window |
+| ~~CR-15-12~~ ✔ 0.1.5 | `SettleResponse.replayed?: boolean` (also requested by agentpay) | Settle is idempotent on the payload hash, so one payment can be delivered several times across merchant replicas |
+| ~~CR-15-13~~ ✔ 0.1.5 | Tolerant parsing of open enums for SDKs | `openEnum` is a plain `z.enum`; api-conventions §5 says clients tolerate new values (foundations §3) |
 | CR-15-14 | Funding a sandbox Intents balance: sandbox ops CLI `intents-fund` *(sandbox; no spec change, preferred by the requester)* vs a test-helper route | The demo agent needs a test balance and there is no public route. State: `seed.sh data` currently uses the sandbox ops CLI (`nearpay-sandbox` 313739e, step 1.4) |
 
 **From agentpay**
 
 | ID | Request | Why |
 |---|---|---|
-| CR-15-12 | `SettleResponse.replayed?: boolean` | Same as above |
+| ~~CR-15-12~~ ✔ 0.1.5 | `SettleResponse.replayed?: boolean` | Same as above |
 | CR-15-15 | Internal payments route to verify a client secret / read the session for agentpay (e.g. `GET /internal/checkout_sessions/{id}/payer`) | Today agentpay calls payments' public session route with the payer's secret (agentpay §5) |
 | CR-15-16 | *(kit)* intents: send an already-signed tx and return the outcome block hash; http client `call` with extra headers | `executeIntents` loses the tx hash on timeout; agentpay works around both (foundations §4) |
 | CR-15-17 | *(sandbox)* tx-status route | A test-mode execute that fails in transport is requeued and then hits `nonce_used` (agentpay §7) |
 
-**Deploy follow-ups reported with these requests** *(deploy)*: nginx per-response CSP nonce for the checkout and dashboard `index.html` (applied in `nearpay-deploy` 1a9a9c4, platform §1); agentpay and webhooks-dispatcher `depends_on` valkey, batcher `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` with owner-provided `relayer_key_1…4`, `NP_WEBHOOK_SIGNING_KID` from `keys.env` (open, platform §1.2). Agentpay's kill switch also blocks live checkout relays — a conservative reading to revisit (agentpay §8).
+**Deploy follow-ups reported with these requests** *(deploy)*: nginx per-response CSP nonce for the checkout and dashboard `index.html` (applied in `nearpay-deploy` 1a9a9c4, platform §1); agentpay and webhooks-dispatcher `depends_on` valkey, batcher `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` with owner-provided `relayer_key_1…4`, `NP_WEBHOOK_SIGNING_KID` from `keys.env` (applied in `nearpay-deploy` 5329223, step 1.4; the relayer keys come from the `seed.sh live` overlay; platform §1.2). Agentpay's kill switch also blocks live checkout relays — a conservative reading to revisit (agentpay §8).
 
 ## Business
 

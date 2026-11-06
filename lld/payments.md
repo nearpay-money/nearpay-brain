@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -193,7 +193,7 @@ Client secrets: `cs_…_secret_<32 base62>`; stored as SHA-256; compared constan
 | Method & path | Scope | Request → Response | Errors |
 |---|---|---|---|
 | `POST /v1/checkout/sessions` | `checkout_sessions.write` | `{amount, currency, asset_id?, settlement_destination?, success_url, cancel_url?, expires_in? (300–86400, default 3600), ui_mode?, customer?, customer_email?, description?, allowed_origins?, late_payments?, metadata?}` → session `{id, object, url, client_secret, status, expires_at, payment_intent, amount, currency, livemode}` | `account_not_live`, `destination_not_active`, `amount_below_destination_minimum`, `amount_above_unverified_cap`, `currency_unsupported` |
-| `GET /v1/checkout/sessions/{id}` · list | `.read` | session (`expand[]=payment_intent`) | |
+| `GET /v1/checkout/sessions/{id}` · list | `.read` | session (`expand[]=payment_intent`); `sequence` (spec 0.1.5, also on the bus `CheckoutSessionEvent`) = `checkout_sessions.version` — 1 on create, bumped by every session write (`ledger.updateSession`), equal to the session events' `aggregate.version`; independent of the intent's own `sequence` | |
 | `POST /v1/checkout/sessions/{id}/expire` | `.write` | session | `state_conflict` |
 | `POST /v1/payment_intents` | `payment_intents.write` | same pricing fields, no UI → intent (Stage 2; for custom UIs using `@nearpay/js` attempts) | |
 | `GET /v1/payment_intents/{id}` · list | `.read` | intent with `attempts[]`, `overpayments[]`; list filters `status`, `created[gte/lte]` (Stage 1) plus `amount[gte/lte]`, `currency`, `asset_id`, `metadata[key]` (Stage 2, ADR-0018) | |
@@ -214,13 +214,13 @@ All `POST` honour `Idempotency-Key` (foundations §7).
 
 | Method & path | Request → Response | Errors |
 |---|---|---|
-| `GET /v1/checkout/sessions/{id}/public` | → `{id, status, amount, currency, display:{merchant_name_unverified, description}, expires_at, settlement:{asset_id, chain, type}, attempt?}` | `client_secret_invalid` |
+| `GET /v1/checkout/sessions/{id}/public` | → `{id, status, payment_intent, amount, currency, display:{merchant_name_unverified, description}, expires_at, settlement:{asset_id, chain, type}, attempt?}` — `payment_intent` (`pi_…`, spec 0.1.5, required) names the session's intent, so the embedded checkout's `np:complete` needs no SSE `intent` event | `client_secret_invalid` |
 | `GET /v1/checkout/sessions/{id}/public/payment_options?chain=&wallet=` | → `{options:[{origin_asset_id, chain, symbol, estimated_amount_in, route_class, min_deadline_s, available}]}` (indicative, from rails with an estimated `amount_out`; options slower than the remaining window are marked `route_too_slow`). No settlement estimate or rails unreachable → empty `options` (the checkout offers the manual path) | |
 | `POST /v1/checkout/sessions/{id}/public/attempts` | `{origin_asset_id, refund_to?, payer_wallet?, method: route_quote\|intents_transfer, turnstile_token}` — `route_quote` requires `refund_to` (wallet path: the connected address); `intents_transfer` requires `payer_wallet` (the payer's Intents account; refunds go there) → attempt `{id, status, method, deposit?:{address, memo, amount_in, min_amount_in, deadline, chain}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}, attestation_ticket}` | `session_not_open`, `attempt_in_flight`, `too_many_attempts`, `route_too_slow`, `refund_address_invalid`, `screening_blocked`, `geo_blocked`, `rail_unavailable`, `turnstile_failed` |
 | `POST …/attempts/{pa}/deposit_tx` | `{tx_hash}` → `202` | |
 | `POST …/attempts/{pa}/sent` | → `202` (deposit signal) | |
 | `POST …/attempts/{pa}/signed_intent` | `{signed: MultiPayload}` → `202` (relayed by agentpay) | `intent_invalid`, `insufficient_balance` |
-| `GET …/public/stream` | SSE (`text/event-stream`, client secret in header — the SPA uses a fetch-based SSE client because `EventSource` cannot send headers): `event: session` / `attempt` / `intent` snapshots; heartbeat 15 s; `retry: 3000` | |
+| `GET …/public/stream` | SSE (`text/event-stream`, client secret in header — the SPA uses a fetch-based SSE client because `EventSource` cannot send headers): `event: session` / `attempt` / `intent` snapshots (`session` is the public session above, incl. `payment_intent`); heartbeat 15 s; `retry: 3000` | |
 | `POST …/attempts/{pa}/simulate_deposit` | **test mode only** → sandbox `POST /sim/deposits` → `202` | `livemode_forbidden` |
 | `POST /v1/test_helpers/payment_attempts/{pa}/advance` (secret test key) | `{to: deposit\|processing\|success\|refund\|fail}` → sandbox `POST /sim/advance` → `202` | `livemode_forbidden` |
 | `GET /v1/payment_links/{id}/public` · `POST …/public/sessions` | → link display / new session `{url}` | `link_inactive` |
@@ -346,7 +346,7 @@ execution settled → refund succeeded (amount_refunded += amount, pending −= 
 | compliance geo policy | 1 s | 1 | yes | cached policy; never loaded → `503 screening_unavailable` |
 | identity settlement context | 1 s | 1 | yes | use cached context ≤ 1 h old; else `503` |
 | agentpay `POST /internal/relay` | 5 s | 0 (idempotent on payload hash; client may resubmit) | yes | `503` |
-| Turnstile siteverify | 2 s | 1 | yes | outage flag → stricter per-IP limit (F-12) |
+| Turnstile siteverify | 2 s | 1 | yes | outage flag → stricter per-IP limit (F-12). Cloudflare's test secrets (`1x…AA` pass, `2x…AA` fail, `3x…AA` spent token) are answered locally when `NP_ENV` ≠ `server`, as identity does (identity §11), so an offline stack never falls into the outage limit; on the server and for real secrets siteverify is always asked |
 
 ## 11. Configuration
 

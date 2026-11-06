@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -63,9 +63,9 @@ export const createCheckoutSession = route({
 
 Rules: additive changes only within a version; new enum values are allowed only for enums declared `open()`; every schema field has `.describe()`; every route lists its error codes; `pnpm emit && pnpm compat` must pass in CI. Releases: semver per package; services pin exact versions.
 
-**Known gap (step 1.3):** `openEnum` is emitted as a plain `z.enum`, so a client that parses responses with the spec schemas rejects a new enum value, although api-conventions §5 says clients tolerate them. SDKs therefore do not validate responses (`@nearpay/node`); a tolerant parse helper is requested for spec 0.1.5 (`roadmap/open-questions.md`).
+**Tolerant parsing (0.1.5):** `openEnum` schemas stay strict `z.enum`s (servers validate what they produce; the typed unions are unchanged). Clients that parse responses, events or webhook payloads use `safeParseTolerant(schema, input)` / `parseTolerant(schema, input)`: an unknown string value of an **open** enum is accepted, kept verbatim and listed in `unknown` with its path; closed enums, literals, types, formats and missing fields still fail with the strict error. The dashboard, checkout and agentkit use it; `@nearpay/node` keeps not validating responses (sdks-and-tools §1).
 
-**Releases so far (all additive):** 0.1.0 Stage 1 contracts (step 1.1) · 0.1.1 sandbox quote carries `scenario_amount` · 0.1.2 `pol_` ids and execution review subjects · 0.1.3 optional `livemode` on rails asset and options reads · 0.1.4 `ks_` id prefix (kill switch). 0.1.5 is planned from the step 1.2/1.3 change requests.
+**Releases so far (all additive):** 0.1.0 Stage 1 contracts (step 1.1) · 0.1.1 sandbox quote carries `scenario_amount` · 0.1.2 `pol_` ids and execution review subjects · 0.1.3 optional `livemode` on rails asset and options reads · 0.1.4 `ks_` id prefix (kill switch) · 0.1.5 change requests from steps 1.2/1.3 (step 1.4; `nearpay-spec/CHANGELOG.md`): `PublicCheckoutSession.payment_intent`, x402 `SettleResponse.replayed` and `extra.deadline`, open `enabled_events` request items, `sequence` on `CheckoutSession` and `AgentPayment`, routes `GET /v1/auth/session`, `GET /v1/webhook_endpoints/{id}/deliveries` (`whd_` prefix) and `POST /v1/settlement_destinations/{id}/challenge`, tolerant parsing.
 
 ## 4. `nearpay-kit` — shared runtime packages
 
@@ -252,3 +252,7 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 - **Kit (§4):** 0.1.1 spec-driven peer mocks (`mockPeer`); 0.1.2 consumer glue (`inboxHandler`, `startDomainConsumers`), background tasks and provisioned test databases. Requested: an intents call that sends a pre-signed tx and returns its outcome; extra headers on `httpClient` calls.
 - **Spec (§3):** releases 0.1.1–0.1.4 (additive); open enums are not yet tolerant in client parsing.
 - **Configuration (§13):** never wrap a shared schema in `secret()`.
+
+## 19. Changes in version 1.4 (from the step 1.4 implementation)
+
+- **Spec (§3):** release 0.1.5 (additive; `pnpm compat` reports no breaking change since 0.1.4) with the step 1.2/1.3 change requests CR-15-01, 02, 03, 05, 08, 09, 11, 12 and 13 (`roadmap/open-questions.md`); new id prefix `whd_` (webhook delivery, owner webhooks; domain-model §1); tolerant parsing of open enums for clients (`safeParseTolerant` / `parseTolerant`). Not in 0.1.5: CR-15-04, 06, 07, 10 and 15.
