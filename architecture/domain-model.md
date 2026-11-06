@@ -1,6 +1,6 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.1 (ID prefixes completed in step 1.1; `nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
@@ -33,6 +33,8 @@
 | `we_` | WebhookEndpoint | webhooks |
 | `case_` | Compliance case | compliance |
 | `scr_` | Screening result | compliance |
+| `pol_` | Geo policy | compliance |
+| `ks_` | Kill switch | sentinel |
 | `fnd_` | Audit finding | sentinel |
 | `msg_` | Notification message | notify |
 | `req_` | API request (`X-Request-Id`) | gateway |
@@ -160,7 +162,7 @@ stateDiagram-v2
   open --> expiring: expires_at reached
   open --> expired: canceled by merchant (no attempt in flight)
   expiring --> complete: in-flight attempt succeeds (late = true)
-  expiring --> expired: all attempts terminal, none succeeded
+  expiring --> expired: all attempts terminal, none succeeded, intent not in review
   complete --> [*]
   expired --> [*]
 ```
@@ -208,6 +210,8 @@ stateDiagram-v2
   settling --> refunded: REFUNDED
   settling --> held: FAILED after deposit / unknown status
   expired_unpaid --> refunded: late deposit refunded by provider
+  expired_unpaid --> succeeded: late settlement with evidence (evidence wins)
+  expired_unpaid --> held: provider progress without evidence
   held --> succeeded: resolved with evidence
   held --> refunded: resolved as refunded
   succeeded --> [*]

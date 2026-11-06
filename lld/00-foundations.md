@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.2 (step 1.1 implemented in `nearpay-spec` 0.1.0 and `nearpay-kit` 0.1.0; changes in §17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -63,6 +63,10 @@ export const createCheckoutSession = route({
 
 Rules: additive changes only within a version; new enum values are allowed only for enums declared `open()`; every schema field has `.describe()`; every route lists its error codes; `pnpm emit && pnpm compat` must pass in CI. Releases: semver per package; services pin exact versions.
 
+**Known gap (step 1.3):** `openEnum` is emitted as a plain `z.enum`, so a client that parses responses with the spec schemas rejects a new enum value, although api-conventions §5 says clients tolerate them. SDKs therefore do not validate responses (`@nearpay/node`); a tolerant parse helper is requested for spec 0.1.5 (`roadmap/open-questions.md`).
+
+**Releases so far (all additive):** 0.1.0 Stage 1 contracts (step 1.1) · 0.1.1 sandbox quote carries `scenario_amount` · 0.1.2 `pol_` ids and execution review subjects · 0.1.3 optional `livemode` on rails asset and options reads · 0.1.4 `ks_` id prefix (kill switch). 0.1.5 is planned from the step 1.2/1.3 change requests.
+
 ## 4. `nearpay-kit` — shared runtime packages
 
 | Package | Public surface (signatures abbreviated) |
@@ -70,13 +74,13 @@ Rules: additive changes only within a version; new enum values are allowed only 
 | `@nearpay-internal/ids` | `newId(prefix): PrefixedId`, `toUuid(id)`, `fromUuid(prefix, uuid)`, `isId(prefix, s)` — UUIDv7, Crockford base32 (26 chars) |
 | `@nearpay-internal/money` | `type Amount = bigint`; `Fiat {amount: bigint, currency}`; `AssetAmount {amount: bigint, assetId}`; `parseUnits`, `formatUnits`, `mulDivFloor(a,b,c)`, `bpsOf(amount,bps)`, `minorUnits(currency)`; throws on any `number` input |
 | `@nearpay-internal/service` | `createService({name, config, routes: [implement(route, handler)], idempotency, readiness, background})` → Fastify app with spec-route auth + validation, health (`/healthz`, `/readyz`), metrics, OTel, pino, graceful shutdown (30 s drain), request-id, error mapping, SSE; consumers and jobs run as `background` tasks; `loadConfig(shape)` reading `NP_*` env + `NP_*_FILE` secrets (`/run/secrets/*`); `runMain({api, worker, migrate, …})` |
-| `@nearpay-internal/db` | `createDb({url\|urlFile})` (Kysely + pg pool), `withTx(db, fn, {isolation})`, `migrate(db, dir)`, **outbox** `emit(tx, event)` + `startOutboxRelay({db, pool, publish})`, **inbox** `consume(tx, eventId)`, **idempotency** `withIdempotency(db, ctx, fn)` / `idempotencyStore(db, cipher)`, **jobs** `enqueueJob`/`startJobWorker`, `advisoryLeader({pool, name, run})`, envelope encryption, retention |
-| `@nearpay-internal/bus` | `connectBus()`, `ensureStreams(defs)`, `subscribe({durable, filter, handler, maxDeliver})`, `publish(subject, envelope, msgId)` |
+| `@nearpay-internal/db` | `createDb({url\|urlFile})` (Kysely + pg pool), `withTx(db, fn, {isolation})`, `migrate(db, dir)`, **outbox** `emit(tx, event)` + `startOutboxRelay({db, pool, publish})`, **inbox** `consume(tx, eventId)`, **idempotency** `withIdempotency(db, ctx, fn)` / `idempotencyStore(db, cipher)`, **jobs** `enqueueJob`/`startJobWorker`, `advisoryLeader({pool, name, run})`, envelope encryption, retention; **0.1.2:** `inboxHandler` (inbox dedupe + handler in one transaction), `deadLetterSink`, background tasks `outboxRelayTask`, `jobWorkerTask`, `leaderTask`, `recurringJobsTask` (leader-elected, one job per slot through the dedupe key) |
+| `@nearpay-internal/bus` | `connectBus()`, `ensureStreams(defs)`, `subscribe({durable, filter, handler, maxDeliver})`, `publish(subject, envelope, msgId)`; **0.1.2:** `startDomainConsumers` creates one durable per producing stream with the handled subjects as filters and refuses subjects the event catalogue does not route to the service; `unhandledSubjects`, `durablesOf` |
 | `@nearpay-internal/auth` | `verifyInternalJwt(token, jwks)`, `requireScope(ctx, scope)`, `serviceTokenClient({clientId, secretFile})`, header constants |
-| `@nearpay-internal/http` | `httpClient({baseUrl, timeoutMs, retries, breaker})` with jittered backoff, idempotent-only retries, circuit breaker (opossum semantics), trace + request-id propagation |
-| `@nearpay-internal/intents` | NEAR Intents payloads: `buildTransferIntents`, `buildPayload({signerId, deadline, nonce, intents})`, `makeNonce(saltHex)`, `encodeNep413`, `encodeErc191`, `verifySigned(multiPayload)`, `parseDip4Events(logs)`, `intentsRpc({currentSalt, simulateIntents, executeIntents, mtBatchBalanceOf})` |
+| `@nearpay-internal/http` | `httpClient({baseUrl, timeoutMs, retries, breaker})` with jittered backoff, idempotent-only retries, circuit breaker (opossum semantics), trace + request-id propagation; its `call` cannot set extra headers (agentpay sends the payer's client secret with its own request; change requested) |
+| `@nearpay-internal/intents` | NEAR Intents payloads: `buildTransferIntents`, `buildPayload({signerId, deadline, nonce, intents})`, `makeNonce(saltHex)`, `encodeNep413`, `encodeErc191`, `verifySigned(multiPayload)`, `parseDip4Events(logs)`, `intentsRpc({currentSalt, simulateIntents, executeIntents, buildExecuteTx, mtBatchBalanceOf})`. `executeIntents` loses the tx hash when the send times out, so agentpay signs with `buildExecuteTx`, stores the hash and sends it itself (agentpay §7); a kit call that sends an already-signed tx and returns the outcome block hash is requested |
 | `@nearpay-internal/chains` | Chain registry (CAIP-2 ↔ 1Click `blockchain` ↔ display), address validation per chain family, finality rules, explorer URL builders |
-| `@nearpay-internal/testing` | Testcontainers fixtures, fake clock, factories for every aggregate, `eventProbe(natsUrl)` + `expectEvent(probe, subject, matcher)`, test tokens |
+| `@nearpay-internal/testing` | Testcontainers fixtures, fake clock, factories for every aggregate, `eventProbe(natsUrl)` + `expectEvent(probe, subject, matcher)`, test tokens; **0.1.1:** `mockPeer` serves a peer's spec routes through the real service bootstrap (requests validated, caller tokens verified and authorized from each route's auth list, mocked responses validated, calls recorded), `mockError`, `mintServiceToken`, `testServiceToken`; **0.1.2:** `provisionServiceDatabase` mirrors `postgres-init` (migrator owns, app role gets DML through default privileges) |
 
 Kit packages contain **no domain rules** (ADR-0001). Semver; a breaking change bumps major and ships a codemod note.
 
@@ -205,6 +209,7 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 - Env vars `NP_<NAME>`; secrets only as files `/run/secrets/<name>` (Docker secrets, ADR-0015), referenced by `NP_<NAME>_FILE`.
 - Common keys: `NP_ENV` (`local`·`server`), `NP_SERVICE`, `NP_DB_URL_FILE`, `NP_NATS_URL`, `NP_VALKEY_URL`, `NP_IDENTITY_URL`, `NP_JWKS_URL`, `NP_SERVICE_CLIENT_SECRET_FILE`, `NP_OTEL_ENDPOINT`, `NP_LOG_LEVEL`, `NP_EGRESS_PROXY`.
 - Config is validated at boot with zod; invalid config = exit 1.
+- **Pitfall:** `secret(schema)` of `@nearpay-internal/service` marks the schema object it wraps. Wrapping a shared schema (e.g. a common URL schema) silently turns every other key using it into a secret that is accepted only from a file; always pass a fresh schema (found in sentinel's Compose config; fixed with a regression test).
 
 ## 14. NEAR Intents payloads (implemented in `@nearpay-internal/intents`)
 
@@ -213,7 +218,7 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 - **Envelope (`MultiPayload`):** `{"standard":"nep413","payload":{"recipient":"intents.near","nonce","message"},"public_key":"ed25519:…","signature":"ed25519:…"}` or `{"standard":"erc191","payload":"<json string>","signature":"secp256k1:…"}` (v normalised to 0/1). Keys/signatures are `<curve>:<base58>`; secp256k1 pubkeys 64 B uncompressed, signatures 65 B r‖s‖v.
 - **Transfer intent:** `{"intent":"transfer","receiver_id":"<acct>","tokens":{"nep141:<token>":"<amount>"},"memo":"<binding>"}`.
 - **Calls:** `simulate_intents({"signed":[…]})` → `{intents_executed[{intent_hash,account_id,nonce}], logs[], min_deadline, state{fee,current_salt}}`; `execute_intents({"signed":[…]})` (gas: from simulation + margin, SP-07); `mt_batch_balance_of({account_id, token_ids})` → `string[]`.
-- **Events:** log lines prefixed `EVENT_JSON:`; `{"standard":"dip4","version":"0.4.3","event":"intents_executed"|"token_diff"|"transfer"|…,"data":[…]}` (version observed on mainnet 2026-11-05; the parser accepts any `dip4` version) plus NEP-245 `mt_transfer`/`mt_mint`/`mt_burn`. The `transfer` event data shape is not documented → the parser treats `intents_executed` + `mt_transfer` (`old_owner_id`, `new_owner_id`, `token_ids`, `amounts`, `memo`) as authoritative and is fixture-tested against mainnet receipts (SP-14).
+- **Events:** log lines prefixed `EVENT_JSON:`; `{"standard":"dip4","version":"0.4.3","event":"intents_executed"|"token_diff"|"transfer"|…,"data":[…]}` (version observed on mainnet 2026-11-05; the parser accepts any `dip4` version) plus NEP-245 `mt_transfer`/`mt_mint`/`mt_burn`. **SP-14 resolved** (mainnet blocks 223270688–223270709 via neardata, 2026-11-06): the DIP-4 `transfer` event data is `{intent_hash, account_id, receiver_id, tokens: {<asset>: <amount>}, memo?}`, and the NEP-245 `mt_transfer` (`old_owner_id`, `new_owner_id`, `token_ids`, `amounts`) emitted for a transfer intent carries **no memo**. Binding attribution therefore reads the memo of the DIP-4 `transfer` event, never `mt_transfer` (the earlier assumption that the `mt_transfer` memo was authoritative was wrong); the parser is fixture-tested against these receipts and the sandbox emits the same shapes.
 
 ## 15. Containers
 
@@ -241,3 +246,9 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 - **Configuration (§13):** keys are camelCase in code and `NP_<SNAKE_CASE>` in the environment; values marked secret are accepted only from `NP_<NAME>_FILE`.
 - **Intents (§14):** DIP-4 version on mainnet is `0.4.3`.
 
+## 18. Changes in version 1.3 (from the steps 1.2 and 1.3 implementation)
+
+- **Intents (§14):** SP-14 resolved — binding memos are on the DIP-4 `transfer` event; `mt_transfer` of a transfer intent has none.
+- **Kit (§4):** 0.1.1 spec-driven peer mocks (`mockPeer`); 0.1.2 consumer glue (`inboxHandler`, `startDomainConsumers`), background tasks and provisioned test databases. Requested: an intents call that sends a pre-signed tx and returns its outcome; extra headers on `httpClient` calls.
+- **Spec (§3):** releases 0.1.1–0.1.4 (additive); open enums are not yet tolerant in client parsing.
+- **Configuration (§13):** never wrap a shared schema in `secret()`.

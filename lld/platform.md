@@ -1,6 +1,6 @@
 # LLD — Platform (`nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` entry)
 
-> Version 1.2 (step 1.1 implemented; changes in §1.1) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
+> Version 1.3 (steps 1.2 and 1.3 implemented; changes in §1.2, local stand-in images in §1.3, testbed in §3) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
 
 ## 1. `nearpay-deploy/compose` — the v1 stack
 
@@ -16,6 +16,7 @@ compose/
 ├── static/                      # nginx config for pay, js, dashboard, ops, docs (+ placeholder page)
 ├── egress-proxy/Dockerfile      # Smokescreen v0.1.0 built from source
 ├── registry/config.yaml         # Verdaccio (@nearpay/*, @nearpay-internal/*)
+├── (../images/)                 # local stand-ins for third-party images, same tags (§1.3)
 ├── env/local.env.example        # non-secret config (copied to local.env on first up); secrets in ../.secrets
 └── scripts/                     # (in ../scripts) up, down, seed (+ deploy, secrets-decrypt in Stage 5)
 ```
@@ -33,9 +34,9 @@ compose/
 | `identity-api`, `identity-worker` | nearpay-identity | internal, data, egress (NEAR/EVM RPC for attestations §8.2, Turnstile) | postgres, nats, valkey |
 | `payments-api`, `payments-worker` | nearpay-payments | internal, data, egress (Turnstile siteverify) | identity-api, rails-api |
 | `rails-api`, `rails-tracker`, `rails-feeds` | nearpay-rails | internal, data, egress | postgres, nats, compliance-api |
-| `agentpay-api`, `agentpay-batcher` | nearpay-agentpay | internal, data, egress | postgres, nats |
+| `agentpay-api`, `agentpay-batcher` | nearpay-agentpay | internal, data, egress | postgres, nats (valkey: follow-up, §1.2) |
 | `compliance-api`, `compliance-worker` | nearpay-compliance | internal, data, egress | postgres, nats |
-| `webhooks-api`, `webhooks-ingest`, `webhooks-dispatcher` | nearpay-webhooks | internal, data (dispatcher → egress-proxy only) | postgres, nats |
+| `webhooks-api`, `webhooks-ingest`, `webhooks-dispatcher` | nearpay-webhooks | internal, data (dispatcher → egress-proxy only) | postgres, nats; dispatcher: egress-proxy (valkey: follow-up, §1.2) |
 | `notify-api`, `notify-worker` | nearpay-notify | internal, data, egress | postgres, nats |
 | `billing-api`, `billing-worker` | nearpay-billing | internal, data, egress (RPC) | postgres, nats (Stage 3+) |
 | `sandbox-api` | nearpay-sandbox | internal, data | postgres |
@@ -44,7 +45,7 @@ compose/
 | `static` | `nginxinc/nginx-unprivileged:1.29.8-alpine` behind Traefik; sites mounted read-only from the checkout, js, dashboard, console, docs `dist/` (placeholder page until built) | edge | — |
 | `mailpit` (local) | `axllent/mailpit:v1.27.11` | internal | — |
 | `registry` (local) | `verdaccio/verdaccio:6.10.6` | edge (+ host port `127.0.0.1:4873`) | — | local npm registry for `@nearpay/*` and `@nearpay-internal/*` packages so sibling repos consume **published artifacts** (ADR-0001) without a remote; GitHub Packages / npm replace it when remotes exist |
-| `merchant-demo` (local) | nearpay-testbed `merchant-demo` (port 3000) | demo (static IP `NP_DEMO_IP`; the egress proxy allows exactly this private address, webhooks L-WH-02) | payments-api |
+| `merchant-demo` (local, profile `merchant-demo`) | `nearpay/merchant-demo:local`, built from `nearpay-testbed/merchant-demo` (port 3000; §3) | demo (static IP `NP_DEMO_IP`, `.2` of `NP_DEMO_SUBNET`; dynamic addresses come from `NP_DEMO_IP_RANGE` `.4/30`, so traefik or the egress proxy can never take `.2`; the egress proxy allows exactly this private address, webhooks L-WH-02); mounts `.secrets/merchant-demo` read-only at `/run/secrets/merchant-demo` | payments-api |
 
 **Networks:** `edge` (traefik, static), `internal` (all services; no internet), `data` (postgres, nats, valkey + their clients), `egress` (only containers that call the internet), `demo` (local: merchant-demo, egress-proxy, traefik). Containers not on `egress` cannot reach the internet.
 
@@ -62,7 +63,7 @@ compose/
 | `api.…/webhooks/email` (Stage 5) | notify-api | authz (anonymous allowed; provider signature verified by notify) |
 | `api.…/v1/assets` | rails-api | authz (anonymous allowed) |
 | `pay.…`, `dashboard.…` `/api/*` | the API routers above (prefix stripped before ForwardAuth): the checkout and dashboard call the API same-origin, so the API has no CORS surface; unrouted `/api/*` answers 404 | authz |
-| `pay.…`, `js.…`, `dashboard.…`, `ops.…`, `docs.…` | static (nginx) | per-site headers: `frame-ancestors 'none'` (pay `/embed/*`: `https:` + local http), nosniff, referrer and permissions policies; js served with CORS + cross-origin CORP |
+| `pay.…`, `js.…`, `dashboard.…`, `ops.…`, `docs.…` | static (nginx) | per-site headers: `frame-ancestors 'none'` (pay `/embed/*`: `https:` + local http), nosniff, referrer and permissions policies; js served with CORS + cross-origin CORP and `Cache-Control: public, max-age=300` (`/v1/` is the protocol major, not a release: the loader changes with releases, so it is never immutable); pay (`/` and `/embed/`) and dashboard `index.html` get a per-response CSP nonce — nginx `sub_filter` replaces `{{NP_CSP_NONCE}}` (pay) and `NPCSPNONCE` (dashboard) with the 128-bit `$request_id`, `sub_filter_once off` (NEAR Connect wallet frames need it; checkout §2, dashboard §1) |
 | `api.…/healthz` | Traefik `ping@internal` (`OK`) | — |
 | `mail.…`, `merchant-demo.…` (local) | mailpit, merchant-demo | — |
 
@@ -74,11 +75,13 @@ ForwardAuth middleware: `http://identity-api:8080/internal/authz`, `authResponse
 
 **Local secrets (`seed.sh keys`, test-only, never overwritten):** `postgres_password`; `db_url_<svc>` / `db_migrate_url_<svc>` (app / migrator URLs) and `db_registry_url_sentinel`; `jwt/current.pem`, `jwt/next.pem` (mounted at `/run/secrets/jwt/`), `sentinel_signing_key.pem` (mounted as `/run/secrets/sentinel-<kid>.pem`), `payments_ticket_key.pem`, `webhook_signing_key.pem`, `sandbox_signing_key.pem` (Ed25519 PKCS#8 PEM, generated with Node so macOS works); `service_client_<svc>` and identity's `service_clients.json` (`{"clients":[{"client_id","secret_sha256"}]}`); `kek_<svc>` (32 bytes base64, one per service for all envelope encryption: PII, idempotency bodies, endpoint secrets); `turnstile_secret` (Cloudflare's always-pass test secret; sitekey `1x00000000000000000000AA`); `registry_password`. Public material in `.secrets/public/`: `keys.env` (`NP_SENTINEL_KID`, `NP_JWT_CURRENT_KID`, `NP_PAYMENTS_TICKET_PUBKEY`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_WEBHOOK_SIGNING_KID` — public keys as raw 32-byte base64url, kids `local-<12 hex of sha256(pubkey)>`) and `sentinel_keys.json` (`[{kid, public_key}]` for `VITE_SENTINEL_KEYS`). TLS: `tls/{cert,key,ca}.pem` from mkcert when installed (trusted after `mkcert -install`), otherwise a self-signed local CA + leaf (browsers warn; passkeys need the trusted certificate).
 
-**Build/start order (local, `scripts/up.sh local`):** `seed.sh keys` (secrets + TLS) → registry up → publish `nearpay-spec` then `nearpay-kit` when a package version in those repositories is missing (release scripts accept only a loopback registry and pack reproducibly, so lockfile integrity hashes stay valid when a fresh registry is re-seeded) → static builds of checkout/js/dashboard read the **public** sentinel key from `.secrets/public/` (pinned at build) → `docker build --network host --build-arg NP_REGISTRY_URL=http://127.0.0.1:4873 -t nearpay/<svc>:local ../nearpay-<svc>` for every service whose repo has a `Dockerfile` (Compose's bake builder refuses `network: host` without an interactive grant, so Compose never builds or pulls service images) → `docker compose up --wait` (postgres-init → migrate-<svc> → processes healthy) → `seed.sh data` (step 1.2+). Each service has a Compose profile named after it; `up.sh` enables it once `../nearpay-<svc>/Dockerfile` exists and lists the services not built yet. Requires Docker Compose ≥ 2.30, Node 22 + pnpm.
+**Build/start order (local, `scripts/up.sh local`):** `seed.sh keys` (secrets + TLS) → registry up → publish `nearpay-spec` then `nearpay-kit`, then the client packages `nearpay-node` and `nearpay-agentkit` (single-package repos supported; the merchant demo installs `@nearpay/node`, `@nearpay/x402`, `@nearpay/agent-signer`) when a package version in those repositories is missing (release scripts accept only a loopback registry and pack reproducibly, so lockfile integrity hashes stay valid when a fresh registry is re-seeded) → static builds (`pnpm install && pnpm build` in checkout, then js, then dashboard) read the **public** sentinel key from `.secrets/public/sentinel_keys.json` (pinned at build; checkout §2) → `docker build --network host --build-arg NP_REGISTRY_URL=http://127.0.0.1:4873 -t nearpay/<svc>:local ../nearpay-<svc>` for every service whose repo has a `Dockerfile` (Compose's bake builder refuses `network: host` without an interactive grant, so Compose never builds or pulls service images) → `docker compose up --wait` (postgres-init → migrate-<svc> → processes healthy) → `seed.sh data` (step 1.2+). Each service has a Compose profile named after it; `up.sh` enables it once `../nearpay-<svc>/Dockerfile` exists and lists the services not built yet. Requires Docker Compose ≥ 2.30, Node 22 + pnpm.
 
 **Service image contract:** `ARG NP_REGISTRY_URL` used for `@nearpay/*` and `@nearpay-internal/*` installs; `node dist/main.js <process>` (Compose passes `command: [dist/main.js, <process>]`, so the image's entrypoint is `node`); `HEALTHCHECK` runs `dist/main.js healthcheck` (built into `@nearpay-internal/service`, GET `:8080/healthz`); non-root UID 10001, read-only root FS (Compose enforces `read_only`, `tmpfs /tmp`, `cap_drop: ALL`, `no-new-privileges`, 35 s stop grace).
 
-**Scripts:** `up.sh [local] [--no-build]`, `down.sh [--volumes]` (stops every profile), `seed.sh keys [--renew-tls]` (local keys and TLS) and `seed.sh data` (create a demo merchant via the API in test mode, register `merchant-demo` webhook — step 1.2+), `deploy.sh server` (Stage 5: pull digests, decrypt secrets, `docker compose up -d`, run migrations, smoke test), `backup-verify.sh`.
+**Scripts:** `up.sh [local] [--no-build]` (`--no-build` reuses existing images), `down.sh [--volumes]` (stops every profile), `seed.sh keys [--renew-tls]` (local keys and TLS; also creates `.secrets/merchant-demo/`, readable by UID 10001) and `seed.sh data`, `deploy.sh server` (Stage 5: pull digests, decrypt secrets, `docker compose up -d`, run migrations, smoke test), `backup-verify.sh`.
+
+**`seed.sh data`** (test mode, stack running): (1) runs identity's ops CLI `seed-demo` inside `identity-api` (owner, account, active test destination, test secret + publishable keys; idempotent on the email; identity §17) and writes its JSON to `.secrets/demo.json`; (2) writes the demo's secret key to `.secrets/merchant-demo/secret_key` and creates (once) the webhook endpoint `http://merchant-demo:3000/webhooks` for `payment_intent.*`, `checkout.session.*`, `agent_payment.*` through the API, storing its signing secret as `.secrets/merchant-demo/webhook_secret`; (3) tops the demo agent's simulated Intents balance up to 100 USDC with the sandbox ops CLI `intents-fund` (§3).
 
 ### 1.1 Changes in version 1.2 (from the step 1.1 implementation)
 
@@ -90,6 +93,24 @@ ForwardAuth middleware: `http://identity-api:8080/internal/authz`, `authResponse
 - Service images are built by `up.sh` (host network for the registry), not by Compose; the image contract above.
 - `/healthz` on the API host is Traefik's ping (`OK`); service health is per container.
 
+### 1.2 Changes in version 1.3 (from the steps 1.2 and 1.3 implementation)
+
+- All nine Stage 1 services run in the stack (27 containers healthy in the build workspace); `seed.sh data` is implemented through identity's `seed-demo` (above).
+- `up.sh` publishes the client SDK repos too; the merchant demo is built from its own package directory.
+- Static sites: per-response CSP nonces for the checkout and the dashboard; the js loader is cached for 5 minutes instead of a year.
+- Compose follow-ups reported by the service builds and not yet applied: `agentpay-api`/`agentpay-batcher` and `webhooks-dispatcher` depend on a healthy `valkey` (settle waiters, quotas, endpoint semaphores); the batcher needs `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` and the owner-provided `relayer_key_1…4` (live relaying is off without them); the webhooks services should receive `NP_WEBHOOK_SIGNING_KID` from `keys.env` (otherwise their default kid `wh-…` differs from the `local-…` kid deploy derives for the same key); the egress proxy should restrict ports to 80/443.
+
+### 1.3 Local stand-in images (machines that cannot pull registries)
+
+`nearpay-deploy/images/` builds local images under the **same tags** as every third-party image the stack, the service Dockerfiles and the Testcontainers suites use, so no repository changes when Docker Hub, gcr.io or ghcr.io are unreachable (a sandboxed CI or cloud workspace). On a normal machine Docker pulls the official images and this folder is not used.
+
+- Tags covered: `node:22-bookworm-slim`, `gcr.io/distroless/nodejs22-debian12:nonroot`, `postgres:17.11`, `nats:2.10.29-alpine`, `valkey/valkey:8.1.11-alpine`, `traefik:v3.5.6`, `axllent/mailpit:v1.27.11`, `nginxinc/nginx-unprivileged:1.29.8-alpine`, `verdaccio/verdaccio:6.10.6`, `ghcr.io/foundry-rs/foundry:v1.4.4`, and `nearpay/egress-proxy:smokescreen-v0.1.0` (Smokescreen built offline from vendored sources).
+- Base: `nearpay-local/ubuntu:25.10`, a debootstrap made by `images/rootfs.sh`; official release binaries or npm packages on top, downloads verified against `images/SHA256SUMS`. Distro packages can trail a tag's patch level (e.g. PostgreSQL 17.10 under `postgres:17.11`), so each image records its real contents in the label `org.nearpay.contents`.
+- `images/build.sh [--force] [<image>]` builds what is missing; `NP_IMAGES_EXTRA_CA=<pem>` trusts an intercepting proxy's CA inside the node images (so `pnpm install` works during service builds); `NP_IMAGES_UPDATE_SUMS=1` records checksums after a version bump.
+- Such machines **build the service images first, then start with `scripts/up.sh --no-build`**: a plain `up.sh` asks Compose to rebuild the egress proxy from `compose/egress-proxy/Dockerfile`, which pulls `golang`/`alpine`.
+- Testcontainers' reaper image is not built: run tests with `TESTCONTAINERS_RYUK_DISABLED=true`.
+- Remove a stand-in with `docker image rm <tag>` once the registries are reachable.
+
 ## 2. `nearpay-infra` (Stage 5)
 
 Ansible: `base-hardening` (Debian 12, unattended upgrades, SSH keys only, nftables default-deny, fail2ban), `docker-host` (Docker CE, compose plugin, log rotation, WAL-G timer, node exporter), `wireguard` (admin access). Terraform: Cloudflare (DNS, proxy, origin certs, Authenticated Origin Pulls, WAF managed rules, Turnstile sitekeys, Access app for `ops.`), object storage bucket (WAL-G, backups, audit) at an EU provider, GitHub org settings (branch protection, CODEOWNERS enforcement).
@@ -98,20 +119,32 @@ Ansible: `base-hardening` (Debian 12, unattended upgrades, SSH keys only, nftabl
 
 ```
 compose/compose.test.yaml   # overrides: time scale 0.1 for sandbox, test secrets
-merchant-demo/              # tiny Express app: creates sessions via @nearpay/node, receives webhooks,
-                            # exposes GET /premium behind @nearpay/x402 (agent demo)
-demo/checkout.ts            # npm run demo:checkout → creates a session, prints URL, waits for webhook
-demo/agent.ts               # npm run demo:agent → agent fetches /premium with withX402 + agent-signer
+merchant-demo/              # own package (own lockfile, Dockerfile; image nearpay/merchant-demo:local), Express 5,
+                            # @nearpay/node 0.1.0 (sessions, constructEvent) + @nearpay/x402 0.1.1 (GET /premium)
+demo/checkout.ts            # pnpm demo:checkout → session via merchant-demo, scripted payer, waits for the signed webhook
+demo/agent.ts               # pnpm demo:agent → agent fetches /premium with withX402 + agent-signer (--live: mainnet, step 1.5)
+lib/                        # spec-route HTTP client, stack locations, merchant-demo client, scripted payers, scenarios 00–07
 e2e/api|checkout|dashboard|agent/   # Vitest + Playwright suites per stage
+test/                       # unit + mock-backed tests (spec-validated fake API, sentinel test key, webhooks)
 contract-tests/             # consumer-driven tests across services from spec fixtures
 load/                       # k6: sessions/attempts, webhook fan-out, x402 settle
 chaos/                      # kill containers, block egress, stall NATS; assert money-safety invariants
 canary/                     # mainnet canary runner (budget-capped, human-started)
-ops/                        # Stage 1 ops CLI (local only): wrappers around `docker compose exec <svc> node dist/ops.js <cmd>` —
-                            # kyb-decide, kill-switch-release, destination-cooloff-skip; no network auth path exists for them;
-                            # Stage 2 replaces them with the console (ops principals, two-person rules)
+ops/                        # Stage 1 ops CLI (local only, `pnpm ops <cmd>`): `docker compose … exec -T <svc>-api /nodejs/bin/node
+                            # dist/ops.js …` with up.sh's project, files, env files and the service profile; no network auth
+                            # path exists for them; Stage 2 replaces them with the console (ops principals, two-person rules)
 fixtures/oneclick|near/     # recorded provider responses and mainnet receipts (SP-14)
 ```
+
+**merchant-demo:** reads `secret_key` / `webhook_secret` lazily (5 s cache) from `NP_DEMO_SECRETS_DIR` (default `/run/secrets/merchant-demo`), so it starts healthy before `seed.sh data` (Compose runs `up --wait` first) and picks the secrets up without a restart. Routes: `/`, `POST /checkout` (USD 2.00; test-mode-only `amount` and `expires_in` overrides for sandbox scenarios, incl. 07), `/orders/:cs`, `/success`, `POST /webhooks` (v1 HMAC, any `v1`, 300 s tolerance, dedupe by event id), `/events` (only when `NP_ENV` is local/test), `/premium` (x402, 10000 base units). Its public URL defaults to the API URL with `api.` → `merchant-demo.`; x402 resource URLs use it, not the container URL.
+
+**Ops CLI commands:** `kyb-show`, `kyb-decide` (compliance, `--actor`), `kill-switch` / `kill-switch-engage` / `kill-switch-release` (sentinel; release needs `--yes`; sentinel's CLI has no `--actor`, so the operator's name is prefixed to the reason), `destination-cooloff-skip` and `account-show` (identity; T1's "account live" check uses `account-show`, since `GET /v1/account` is session-only), `rails-flags`.
+
+**Demo agent (test only):** fixed key `sha256("nearpay demo agent (test only)")`, implicit account `0857962d91335176f92257df38175401936a4ca31b832f0c98c77b836800c655`. Test-mode x402 and T3/T5 need its sandbox Intents balance funded; there is no public route for it, so `seed.sh data` funds it with the sandbox ops CLI (`ops.js intents-fund <account> <token> <amount>`, test mode by construction; sandbox §9).
+
+**Scripted payer = checkout rules:** creates the attempt, verifies sentinel's co-signature with the pinned key (fail closed), then "Simulate payment" (`route_quote`) or signs the attested requirement (`intents_transfer`); Turnstile uses Cloudflare's always-pass test token.
+
+**E2E modes:** `NP_E2E=1` runs against the real stack; `NP_E2E=mock` runs the same suites (scenario 00, T2–T5) against the spec-validated mock stack, so suite logic is tested before step 1.4; slow scenarios run only with `NP_E2E_SLOW=1`. Scenario expectations to confirm in step 1.4 (`lib/scenarios.ts`): 02 and 04 end with the intent back in `requires_payment` (attempt refunded, session open) and `payment_intent.payment_failed`; 05 ends in `requires_review` with no succeeded event; 06 `succeeded` + `overpaid`; 07 `late: true`.
 
 ## 4. `nearpay` entry repo
 

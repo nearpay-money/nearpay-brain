@@ -1,6 +1,6 @@
 # LLD — `nearpay-identity`
 
-> Version 1.2 (configuration wiring from step 1.1 in §11) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
@@ -64,15 +64,28 @@ create table passkeys (
   aaguid uuid, name text not null, created_at timestamptz not null default now(), last_used_at timestamptz);
 
 create table sessions (
-  id uuid primary key, user_id uuid not null references users(id), account_id uuid not null references accounts(id),
-  token_hash bytea not null unique, csrf_hash bytea not null, step_up_at timestamptz,
+  id uuid primary key, kind text not null default 'dashboard' check (kind in ('dashboard','ops')),
+  user_id uuid not null references users(id), account_id uuid references accounts(id),   -- null for ops sessions
+  token_hash bytea not null unique, csrf_hash bytea not null,
+  csrf_enc bytea not null,                          -- envelope-encrypted copy: the CSRF token is re-issued with the session object
+  step_up_at timestamptz,
   created_at timestamptz not null default now(), expires_at timestamptz not null, last_seen_at timestamptz not null,
-  revoked_at timestamptz, ip_enc bytea, user_agent text);
+  revoked_at timestamptz, ip_enc bytea, user_agent text,
+  check ((kind = 'dashboard') = (account_id is not null)));
 create index sessions_user on sessions (user_id) where revoked_at is null;
 
 create table magic_links (
   token_hash bytea primary key, email citext not null, purpose text not null check (purpose in ('signup','recovery','invite')),
   account_id uuid, role text, expires_at timestamptz not null, used_at timestamptz);
+
+create table registration_tokens (                  -- verified email → passkey registration (5 min, single use)
+  token_hash bytea primary key, email citext not null, user_handle bytea not null,  -- WebAuthn user.id of the future user
+  expires_at timestamptz not null, used_at timestamptz, created_at timestamptz not null default now());
+
+create table webauthn_challenges (                  -- one row per ceremony; single use
+  challenge text primary key, purpose text not null check (purpose in ('registration','authentication','step_up')),
+  registration_token_hash bytea, user_id uuid, session_id uuid, host text,   -- dashboard or ops host the ceremony started on
+  expires_at timestamptz not null, used_at timestamptz, created_at timestamptz not null default now());
 
 create table api_keys (
   id uuid primary key, account_id uuid not null references accounts(id), livemode boolean not null,
@@ -88,7 +101,9 @@ create table fee_schedules (
   id uuid primary key, name text not null unique,
   rules jsonb not null,   -- {same_asset|stable_pair|volatile|intents_transfer: {total_bps:int, min_fee_usd_micros:bigint}} (classes defined in rails LLD §8.1)
   provider_split jsonb not null, -- {oneclick:{share_bps:5000, floor_bps:20, stable_floor_bps:1}}
-  created_at timestamptz not null default now());
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+-- the migration seeds schedule 'standard' with the Q-BIZ-02 defaults: same_asset 20, stable_pair 50, volatile 100,
+-- intents_transfer 30 bps with min_fee_usd_micros 1000 (USD 0.001); the others have no minimum
 
 create table settlement_destinations (
   id uuid primary key, account_id uuid not null references accounts(id), livemode boolean not null,
@@ -141,15 +156,19 @@ create table audit_events (
   created_at timestamptz not null default now());
 create index audit_account on audit_events (account_id, created_at desc);
 
-create view sentinel_destination_registry as        -- granted SELECT to role sentinel_ro only
+create view sentinel_destination_registry as        -- granted SELECT to role sentinel_ro only (v2, migration 0002)
   select d.id, d.account_id, d.livemode, d.asset_id, d.type, d.chain, d.address_norm, d.status, d.active_at,
-         coalesce(a.verified_legal_name, a.display_name) as merchant_name, a.verified_legal_name is not null as kyb_verified
-  from settlement_destinations d join accounts a on a.id = d.account_id where d.status = 'active';
+         coalesce(a.verified_legal_name, a.display_name) as merchant_name, a.verified_legal_name is not null as kyb_verified,
+         d.verification, d.disabled_at
+  from settlement_destinations d join accounts a on a.id = d.account_id
+  where d.status = 'active' or (d.status = 'disabled' and d.active_at is not null);
 ```
+
+Registry view v2: `verification` lets sentinel R5 prefer the single signature-verified row; destinations that were active once and are now disabled are listed with `disabled_at`, so sentinel's audit can check that a settlement reached a destination active when the execution was created, and the co-signer can answer `stale` (never a security breach) for a recipient whose destination was disabled while a checkout was open (sentinel §5, §7). The co-signer filters `status = 'active'` itself. Columns are only appended (a replaced view may only add columns at the end); pending rows are never listed (contract test pins the columns and the filter).
 
 Migration note: `account_default_destinations` uses a generated column `coalesce_asset text generated always as (coalesce(asset_id,'*')) stored` in the PK.
 
-**Key formats:** `sk_live_` / `sk_test_` / `pk_live_` / `pk_test_` / `rk_live_` / `rk_test_` + 48 base62 chars (≈ 285 bits). Shown once. Stored as SHA-256. Session cookie `__Host-np_session` = 32 random bytes base64url (hash stored), `SameSite=Strict; Secure; HttpOnly; Path=/`, TTL 12 h sliding, absolute 7 days.
+**Key formats:** `sk_live_` / `sk_test_` / `pk_live_` / `pk_test_` / `rk_live_` / `rk_test_` + 48 base62 chars (≈ 285 bits). Shown once. Stored as SHA-256. Session cookie `__Host-np_session` (console: `__Host-np_ops`) = 32 random bytes base64url (hash stored), `SameSite=Strict; Secure; HttpOnly; Path=/`, TTL 12 h sliding, absolute 7 days. The cookie name decides the session kind: a dashboard token presented as a console cookie is no session.
 
 ## 5. State machines
 
@@ -172,10 +191,10 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 
 | Method & path | Auth / role | Request → Response | Errors | Idem. |
 |---|---|---|---|---|
-| `POST /v1/auth/signup` | anonymous (Turnstile) | `{email}` → `202` (magic link sent) | `rate_limited` | — |
+| `POST /v1/auth/signup` | anonymous (Turnstile) | `{email}` → `202`: a single-use magic link (15 min) `<NP_DASHBOARD_ORIGIN>/auth/verify#token=…` (token in the fragment, never in a server log); at most 5 links per address per hour; an address that already has a user gets the same `202` and **no** mail (no enumeration) | `rate_limited` | — |
 | `POST /v1/auth/magic_links/verify` | anonymous | `{token}` → `{registration_token}` (5 min) | `link_expired`, `link_used` | — |
-| `POST /v1/auth/passkeys/registration/options` · `/verify` | registration_token or session | WebAuthn options / attestation → session cookie (new user: creates account `owner`) | `webauthn_failed` | — |
-| `POST /v1/auth/passkeys/authentication/options` · `/verify` | anonymous | `{email?}` / assertion → session cookie + CSRF token | `webauthn_failed` | — |
+| `POST /v1/auth/passkeys/registration/options` · `/verify` | registration_token or session | WebAuthn options / attestation (discoverable credential, user verification required, ES256/EdDSA/RS256) → session cookie (new user: creates user + account `owner` + session, emits `account.created`); adding a passkey to a session re-issues the session object with its CSRF token (from `csrf_enc`) | `webauthn_failed` | — |
+| `POST /v1/auth/passkeys/authentication/options` · `/verify` | anonymous | assertion of a discoverable credential, no email asked (no enumeration) → session cookie + CSRF token; signing in counts as a step-up (`step_up_until` = sign-in + 10 min) | `webauthn_failed` | — |
 | `POST /v1/auth/step_up/options` · `/verify` | session | assertion → `{step_up_until}` (10 min); any step-up-protected endpoint called without a fresh step-up returns `401 step_up_required` | `webauthn_failed` | — |
 | `POST /v1/auth/recovery` | anonymous (Turnstile) | `{email}` → `202`; link → new passkey, sets `accounts.recovered_at` | — | — |
 | `POST /v1/auth/logout` | session | `204` | — | — |
@@ -227,8 +246,10 @@ in: Authorization, X-NearPay-Client-Secret, Cookie, X-CSRF-Token, X-Forwarded-Me
    reject if missing|revoked|expired → 401 invalid_api_key; ip_allowlist mismatch → 403
    pk_ keys allowed only on routes tagged publishable
 3. cookie session → load (lru 10 s) → expired/revoked → 401; unsafe method requires X-CSRF-Token == csrf → else 403
-   lm = header 'NearPay-Mode' == 'live' (default test); live requires account.live_enabled for unsafe methods on money routes
+   lm = header 'NearPay-Mode' == 'live' (default test); live requires account.live_enabled on money routes, i.e. the routes whose
+   spec definition declares the error `account_not_live` (derived from the route table, not a hand-kept list) → 403 account_not_live
    console host (ops.*) → cookie '__Host-np_ops' and principal must be in ops_operators → ptype 'ops'
+   (authz accepts console sessions; issuing them arrives with the console in Stage 2 — Stage 1 has no ops sign-in route, ops work runs through the ops CLIs)
 4. account = cache(acct) → status suspended & livemode & unsafe method → 403 account_suspended
 5. rate limit: valkey token bucket key 'rl:'+principal (live 100 rps burst 200; test 25/50; anonymous 10/20 per IP) → 429 + Retry-After
    client IP = CF-Connecting-IP on the server stage (Cloudflare-only origin), X-Forwarded-For first hop from Traefik locally
@@ -236,7 +257,7 @@ in: Authorization, X-NearPay-Client-Secret, Cookie, X-CSRF-Token, X-Forwarded-Me
 6. jwt = sign({sub, acct, lm, ptype, scp, rid}, kid=current, exp=60 s)   // in-memory key
 7. 200 headers: X-NearPay-Token, X-Request-Id (generate if absent); update last_used_at async (batched)
 ```
-`api_key.revoked` events purge Valkey + broadcast purge of LRUs (NATS core subject `ctl.identity.cache.purge`).
+`api_key.revoked` events purge Valkey + broadcast purge of LRUs (NATS core subject `ctl.identity.cache.purge`); step-ups and logouts purge the session the same way. The api's NATS connection is optional: without it the LRU TTLs bound staleness (keys 30 s, sessions 10 s).
 
 ### 8.2 Attestation verification
 - Message (UTF-8, exact): `NearPay settlement destination\nAccount: acct_…\nMode: live\nAsset: <asset_id>\nNetwork: <caip2>\nAddress: <address>\nNonce: <hex32>\nExpires: <ISO>`.
@@ -244,6 +265,7 @@ in: Authorization, X-NearPay-Client-Secret, Cookie, X-CSRF-Token, X-Forwarded-Me
 - EVM addresses and `0x…` Intents accounts: EIP-191 `personal_sign`; `ecrecover == address`; ERC-1271 (`isValidSignature`) for contract wallets on the stated chain.
 - Solana: ed25519 over message bytes; `base58(pubkey) == address`.
 - Bitcoin: BIP-322 simple; other chain families → `unverified` path only.
+- Stage 1 verifies NEP-413 and EIP-191 (+ ERC-1271) only: a **live** destination whose chain needs Solana or BIP-322 attestation is refused with `400 invalid_request` (`param: chain`) until Stage 4.
 - Challenge single-use, 10 min expiry; signature stored verbatim.
 
 ### 8.3 Settlement context (for payments)
@@ -254,8 +276,9 @@ Query account + fee schedule + active destinations (+ defaults) for `(account, l
 | Kind | Trigger | Behaviour |
 |---|---|---|
 | `destination.activate` | scheduled at `active_at` (dedupe `sd:<id>:activate`) | re-screen via compliance; activate or keep `cooling_off` with alert if screening unavailable (retry with backoff) |
-| `purge.idempotency` / `purge.magic_links` / `purge.sessions` | hourly | delete expired rows |
-| `keys.rotate_jwt` | daily | promote next signing key file (two keys mounted: current + next), publish JWKS, retire after 24 h |
+| `purge.auth` | hourly (+10 min offset) | delete magic links, registration tokens and WebAuthn challenges expired > 1 day, unused attestation challenges expired > 30 days, sessions expired > 30 days |
+| `kit.purge` | hourly | published outbox, old inbox, expired idempotency keys (foundations §7) |
+| `keys.rotate_jwt` | operator action in Stage 1 (no job) | both mounted keys (current + next) are published in the JWKS and `current` signs; promoting `next` is a secret swap + restart (platform runbook) |
 
 ## 10. Integrations
 
@@ -270,6 +293,8 @@ Query account + fee schedule + active destinations (+ defaults) for `(account, l
 ## 11. Configuration
 
 `NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file; v1 list: `POST /v1/auth/{signup,magic_links/verify,passkeys/*,recovery}`, `GET|POST /v1/checkout/sessions/{id}/public/**`, `POST /v1/checkout/sessions/{id}/agent_pay/**`, `GET|POST /v1/payment_links/{id}/public/**`, `GET /v1/invoices/{id}/public`, `POST /v1/attestations/deposit_instructions`, `GET /v1/attestations/keys`, `GET /v1/assets`, `GET /x402/supported`, `GET /v1/webhook_signing_keys`, `POST /webhooks/kyb/{vendor}`, `POST /webhooks/email/{provider}` — every other route requires a credential), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
+
+Step 1.2 additions: `NP_DASHBOARD_ORIGIN` (magic-link target), `NP_COMPLIANCE_URL`, `NP_RAILS_URL`, `NP_NOTIFY_URL` (peers), `NP_NEAR_RPC_URLS` (NEAR `view_access_key` pool), `NP_EVM_RPC_URLS` (`{"<chain id>": [urls]}` for ERC-1271), `NP_VALKEY_URL` (key cache, rate limits; down → per-pod limits at half rate), `NP_NATS_URL` (worker: events; api, optional: cache purge). Cloudflare's Turnstile test secrets are answered locally outside the server stage.
 
 Step 1.1 wiring (platform §1): the anonymous allow-list is `PUBLIC_ANONYMOUS_ROUTES` exported by `@nearpay/spec` (derived from route auth `anonymous`/`client_secret`), so `NP_PUBLIC_ANON_ROUTES` is not needed while it matches the spec; `NP_JWT_KEYS_DIR=/run/secrets/jwt` holds `current.pem` and `next.pem` (kid = `local-` + 12 hex of SHA-256 of the raw public key locally); `NP_SERVICE_CLIENTS_FILE` is `{"clients":[{"client_id","secret_sha256"}]}` with scopes taken from the spec `SERVICE_CLIENT_SCOPES`; identity joins the `egress` network for attestation RPC (§8.2) and Turnstile.
 
@@ -306,6 +331,10 @@ Metrics: `nearpay_identity_authz_duration_seconds{result}`, `…_authz_cache_hit
 
 | Stage | Scope |
 |---|---|
-| 1 | signup + passkeys, step-up, API keys (secret/publishable), destinations for NEAR/Intents/EVM with attestation, single-approver flow (cool-off configurable to 0 locally, 24 h on server), authz incl. mode header and ops principals, JWKS, service tokens, settlement context, notification recipients, test-mode destinations; live mode gated by the **manual** KYB decision from compliance (ops CLI) |
-| 2 | team members & invitations, two-approver rule, restricted keys, recovery flow, KYB-driven live mode, audit export |
+| 1 | signup + passkeys, step-up, API keys (secret/publishable), destinations for NEAR/Intents/EVM with attestation, single-approver flow (cool-off configurable to 0 locally, 24 h on server), authz incl. mode header and ops principals (accepted, not issued), JWKS, service tokens, settlement context, notification recipients, test-mode destinations; live mode gated by the **manual** KYB decision from compliance (ops CLI); ops CLI (§17) |
+| 2 | team members & invitations, two-approver rule, restricted keys, recovery flow, console sessions (ops sign-in), KYB-driven live mode, audit export |
 | 4 | Solana/Bitcoin attestation |
+
+## 17. Ops CLI (Stage 1)
+
+`docker compose exec identity-api /nodejs/bin/node dist/ops.js <command>`: `account-show <acct|email>` (also the testbed's "account live" check, since `GET /v1/account` is session-only) · `operator-add <email> ops|ops_admin` · `operator-revoke <email>` · `destination-cooloff-skip <sd_…>` (local) · `seed-demo [--email] [--name] [--destination]` (`NP_ENV=local` only; idempotent on the email: owner, account "Demo Shop", an active test NEAR Intents-account destination for USDC (`merchant-demo.near` by default) and test secret + publishable keys, printed as JSON; `seed.sh data` uses it, platform §1).

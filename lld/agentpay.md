@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.1 (audited, `audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -12,7 +12,9 @@
 | Compose service | Command | Replicas | Notes |
 |---|---|---|---|
 | `agentpay-api` | `api` | 2 | public x402 + `/v1/agent_payments`, internal `/internal/relay` |
-| `agentpay-batcher` | `batcher` | 1 (leader) | builds, simulates, submits batches; reads outcomes; outbox relay |
+| `agentpay-batcher` | `batcher` | 1 (leader) | builds, simulates, submits batches; reads outcomes; also runs the kill-switch consumer, jobs and the outbox relay. The relay loop is leader-elected (advisory lock `agentpay:batcher`) |
+
+Processes: `node dist/main.js api|batcher|migrate|healthcheck`.
 
 ## 3. NearPay x402 scheme profile (`exact` + `intents-transfer`)
 
@@ -35,8 +37,17 @@
 create table issued_requirements (
   binding text primary key, account_id uuid not null, livemode boolean not null, resource_url text not null,
   pay_to text not null, asset_id text not null, amount numeric(78,0) not null, fee_to text not null, fee_amount numeric(78,0) not null,
-  max_timeout_s integer not null, expires_at timestamptz not null, consumed_at timestamptz, created_at timestamptz not null default now());
+  max_timeout_s integer not null, expires_at timestamptz not null, consumed_at timestamptz, created_at timestamptz not null default now(),
+  resource jsonb not null,                -- {url, description?, mimeType?} echoed in PAYMENT-REQUIRED
+  nonce16 text not null, consumed_by uuid); -- consumed_by: the agent payment that consumed it
 create index ir_expiry on issued_requirements (expires_at) where consumed_at is null;
+
+create table checkout_requirements (     -- what `agent_pay/requirements` handed out, so `agent_pay {signed}` can be matched
+  binding text primary key, account_id uuid not null, livemode boolean not null, checkout_session_id uuid not null,
+  attempt_id uuid not null, execution_id text not null, payer text not null,
+  requirement jsonb not null,             -- IntentsRequirement as payments returned it
+  attestation_ticket text not null, created_at timestamptz not null default now());
+create index cr_session on checkout_requirements (checkout_session_id);
 
 create table agent_payments (
   id uuid primary key, account_id uuid not null, livemode boolean not null,
@@ -47,21 +58,34 @@ create table agent_payments (
   amount numeric(78,0) not null, asset_id text not null, fee_amount numeric(78,0) not null,
   batch_id uuid, tx_hash text, block_height bigint, error_reason text,
   execution_id text,                       -- rails ex_ for checkout/refund kinds
-  created_at timestamptz not null default now(), settled_at timestamptz, version integer not null default 0);
-create index ap_queue on agent_payments (created_at) where status = 'queued';
+  pay_to text, fee_to text, standard text, deadline timestamptz, resource_url text, checkout_session_id uuid,
+  solo boolean not null default false,     -- requeued for a size-1 batch after a split
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), settled_at timestamptz,
+  version integer not null default 0);
+create index ap_queue on agent_payments (livemode, created_at) where status = 'queued';
 create index ap_account on agent_payments (account_id, livemode, created_at desc);
+create unique index ap_binding_live on agent_payments (binding) where status in ('verified','queued','submitted','settled');
+-- one live payload per binding: a second signed payload for the same requirement is refused (intent_invalid)
+-- while the first is live; a failed one frees the binding
+create table agent_payment_transitions (… per foundations §7, append-only …);
 
 create table relay_batches (
-  id uuid primary key, relayer_key text not null, size smallint not null, gas_attached bigint not null,
-  tx_hash text, status text not null check (status in ('building','submitted','final_ok','final_failed','split')),
-  gas_burnt bigint, created_at timestamptz not null default now(), finalized_at timestamptz);
+  id uuid primary key, livemode boolean not null, relayer_key text not null, size smallint not null, gas_attached bigint not null,
+  tx_hash text, tx_nonce bigint, status text not null check (status in ('building','submitted','final_ok','final_failed','split')),
+  failure text, gas_burnt bigint, created_at timestamptz not null default now(), submitted_at timestamptz, finalized_at timestamptz);
 
 create table relayer_keys (
   public_key text primary key, account_id text not null, status text not null check (status in ('active','draining','retired')),
-  in_flight boolean not null default false, last_nonce bigint, allowance_yocto numeric(40,0), last_used_at timestamptz);
+  in_flight boolean not null default false, last_nonce bigint, allowance_yocto numeric(40,0), allowance_checked_at timestamptz,
+  last_used_at timestamptz, created_at timestamptz not null default now());
 
 create table quotas (account_id uuid primary key, rps integer not null default 50, daily_count_limit integer);
+
+create table kill_switch (id smallint primary key check (id = 1), engaged boolean not null, reason text not null, actor text not null,
+  event_version integer not null, updated_at timestamptz not null default now());
+-- single row from evt.sentinel.kill_switch.*; events with a version ≤ event_version are ignored
 ```
+Purges: unconsumed x402 requirements expired more than 24 h; checkout requirements older than 7 days.
 
 ## 5. API
 
@@ -72,29 +96,45 @@ create table quotas (account_id uuid primary key, rps integer not null default 5
 | `POST /x402/verify` | same | `{x402Version, paymentPayload, paymentRequirements}` → `{isValid, payer?, invalidReason?, invalidMessage?}` | `invalid_x402_version`, `invalid_scheme`, `invalid_network`, `invalid_payment_requirements`, `requirement_unknown`, `requirement_expired`, `requirement_consumed`, `invalid_payload`, `invalid_signature`, `recipient_mismatch`, `amount_mismatch`, `deadline_invalid`, `insufficient_funds`, `nonce_used`, `payer_blocked`, `quota_exceeded` |
 | `POST /x402/settle` | same | same body → `{success, transaction, network, payer, amount?, errorReason?}`; idempotent on payload hash | `settlement_pending` (non-terminal), any verify reason, `unexpected_settle_error` |
 | `GET /v1/agent_payments` · `/{id}` | `agentpay.facilitate` or session | list/get | |
-| `POST /v1/checkout/sessions/{id}/agent_pay` | anonymous + `X-NearPay-Client-Secret` | `{signed}` → `{status:'submitted', attempt}`; agent obtains requirements from `GET …/agent_pay/requirements` | as verify + `session_not_open` |
+| `POST /v1/checkout/sessions/{id}/agent_pay` | anonymous + `X-NearPay-Client-Secret` | `{signed}` → `{status:'submitted', attempt}`; agent obtains requirements from `POST …/agent_pay/requirements`; the payload is matched to the handed-out requirement through `checkout_requirements` | as verify + `session_not_open` |
 | `POST /v1/checkout/sessions/{id}/agent_pay/requirements` | anonymous + client secret | `{payer: <agent Intents account>}` → PaymentRequirements-shaped object (pay_to, asset, amount, fee, binding, deadline) + `attempt_id` + `attestation_ticket` from payments `POST /internal/checkout_sessions/{id}/agent_attempts` (creates or reuses the attempt); `@nearpay/agent-signer` verifies a sentinel co-signature before signing (same two-party release as the human checkout) | `session_not_open`, `too_many_attempts`, `destination_not_intents_account` |
 | `POST /internal/relay` | payments (`agentpay.relay`) | `{execution_id, binding, signed}` → `202 {agent_payment_id}` | `intent_invalid`, `insufficient_balance` |
+
+**Client secret on the checkout routes:** agentpay cannot check payments' client secrets. It calls payments' public `GET /v1/checkout/sessions/{id}/public` with the caller's `X-NearPay-Client-Secret` (no service token); that read also gives the session status and the `PayerAttempt` returned by `agent_pay`. This is the Stage 1 path; an internal payments route for it is requested for spec 0.1.5 (`roadmap/open-questions.md`).
+
+**`/internal/relay` validation** uses rails `GET /internal/executions/{id}`: `method = intents_transfer`, `intents_requirement.binding` equal, `state = awaiting_deposit`; then the same exact-two-transfers check, signature check and `simulate_intents` as verify. Account and mode come from the execution. Checkout relays are not screened again (rails screened at execution creation).
 
 ## 6. Verify algorithm
 ```
 1. x402Version == 2; accepted == paymentRequirements (deep-equal, JCS); scheme 'exact'; network 'near:mainnet'
 2. req = issued_requirements[binding] (or rails execution for checkout/refund kinds): exists, account == caller account,
-   livemode == caller, not expired, not consumed
+   livemode == caller, not expired, not consumed; the stored terms (payTo, asset, amount, fee, maxTimeout) equal
+   paymentRequirements; if paymentPayload.resource is present its url must equal req.resource_url
+   → else invalid_payment_requirements (resource is optional in the spec, so a payload without it still verifies)
 3. mp = paymentPayload.payload.signed; standard ∈ {nep413, erc191, raw_ed25519}; verify signature locally (@nearpay-internal/intents)
    msg = parse message: verifying_contract == intents.near; deadline in (now+5 s, req.expires_at]; signer_id = payer
    intents == [transfer(payTo, {asset: amount}, memo=binding), transfer(fee_to, {asset: fee_amount}, memo=binding)] exactly
    named NEAR payer with nep413 → public_key must be registered for payer in intents.near (simulate covers; fails → invalid_signature)
 4. sim = simulate_intents({signed:[mp]}) (3 s) → error text maps: insufficient balance → insufficient_funds; nonce → nonce_used; else invalid_payload
-5. compliance.screen({type:'near_account', address: payer}) cached 24 h → block → payer_blocked
-6. quota: Valkey token bucket per account and per payer → quota_exceeded
+5. compliance.screen({type:'near_account', address: payer}) cached 24 h → block → payer_blocked; review → allowed (payment stands);
+   compliance unreachable → 503 screening_unavailable (fail closed)
+6. quota: one-second fixed windows (Valkey INCR + EXPIRE; in-process without Valkey) per account (quotas.rps, default 50)
+   and per payer (NP_PAYER_RATE_PER_S, 10) → quota_exceeded; requirement issuance per merchant: NP_REQUIREMENT_RATE_PER_S (200)
 7. cache verify result by payload_hash for 60 s; return {isValid:true, payer}
 ```
+**Deadlines:** requirements carry no absolute expiry on the wire (only `maxTimeoutSeconds` from issue), so `@nearpay/agent-signer` signs `deadline = now + floor(maxTimeoutSeconds / 2)` to stay inside `(now + 5 s, issued.expires_at]` despite latency and clock skew (an `extra` deadline is requested for spec 0.1.5).
+
+**Fee:** `fee_amount = max(ceil(amount × bps / 10 000), min_fee_usd_micros at the asset price (par for USD stablecoins without a price), 1 base unit)` — the floor of 1 keeps the fee transfer non-empty; `amount_below_minimum` when `amount < max(1, minimum fee units)`.
 
 ## 7. Settle and batcher
 ```
 settle: verify (cached ok) → insert agent_payments(queued) on conflict(payload_hash) → return existing outcome if final
-        mark requirement consumed (same tx) → wait on Valkey channel 'ap:<id>' up to 8 s
+        mark requirement consumed (same tx) → wait on Valkey channel 'ap:<id>' up to 8 s (in-process without Valkey)
+        a replayed PAYMENT-SIGNATURE gets the same response and never a second agent payment or relay (idempotent on the
+        payload hash); a merchant with several replicas cannot tell a replay from the first delivery, so the resource can be
+        served more than once for one payment — `SettleResponse.replayed` is requested for spec 0.1.5
+statuses: payloads are inserted `queued` (verify and queue in one step; `verified` is unused); a claimed payload moves
+        `queued → submitted` when its batch is built (before simulation and sending); `submitted → queued` on abandon/split
         final → {success:true, transaction}; not final → {success:false, errorReason:'settlement_pending', transaction?: tx if submitted}
 
 batcher (leader, tick 150 ms):
@@ -103,11 +143,16 @@ batcher (leader, tick 150 ms):
   sim = simulate_intents({signed: batch}) → failure → re-simulate each, mark failing ones failed(reason), rebuild batch
   tx = FunctionCall(intents.near, 'execute_intents', {signed: batch}, gas = n × GAS_PER_PAYLOAD + 20 Tgas, deposit 0)
        signed by key (function-call access key, receiver intents.near, method execute_intents)
-  send_tx(wait_until = FINAL) (10 s) → outcome:
+  live: sign with kit buildExecuteTx, store the tx hash, then send_tx(wait_until = FINAL) (10 s) over agentpay's own JSON-RPC
+       call (kit executeIntents hides the hash on timeout); a key carries one tx at a time (in_flight), next nonce = last_nonce + 1
+  outcome:
      success → for each payload: match intents_executed (account_id, nonce) → settled(tx_hash, block); emit events; publish 'ap:<id>'
-     failure → mark batch 'split' → requeue payloads individually (size-1 batches) → failing → failed(reason)
-  timeout → keep 'submitted'; poll tx status every 2 s up to 60 s (EXPERIMENTAL_tx_status final)
+     failure → mark batch 'split' → requeue payloads individually (size-1 batches, `solo`) → failing → failed(reason)
+     InvalidTxError / InvalidNonce / Expired… → nothing executed: payloads requeued, the key's nonce forgotten
+  any other error or timeout → keep 'submitted'; poll tx status every 2 s (every 30 s after 60 s), alert after 60 s,
+     abandon only after 25 h (the block hash has expired, so the tx can no longer land)
 ```
+**Test-mode limitation:** the sandbox has no tx-status route, so a sandbox execute that fails in transport (or a test batch found `submitted` at restart) is requeued, and an already-executed payload then fails with `nonce_used`. Test mode only; a sandbox tx-status route is requested (`roadmap/open-questions.md`).
 Checkout/refund kinds do not emit evidence themselves: rails' NEAR indexer matches the `binding` memo and settles the execution (single evidence path); agentpay marks its record `settled` from the tx outcome for idempotency only.
 
 ## 8. Events
@@ -116,20 +161,22 @@ Checkout/refund kinds do not emit evidence themselves: rails' NEAR indexer match
 |---|---|
 | `evt.agentpay.agent_payment.settled` · `.failed` (kind x402) | webhooks (`agent_payment.settled/failed`), notify (none), compliance (post-screen payer) |
 
-Consumed: `evt.sentinel.kill_switch.engaged` → stop accepting new x402 settles in live mode (`503`) until released.
+Checkout payloads emit nothing (rails' indexer is the single evidence path).
+
+Consumed: `evt.sentinel.kill_switch.engaged` → stop accepting new **live** x402 settles **and** new live checkout relays / `agent_pay` (`503 rail_unavailable`) until released; replays of already-queued payloads and the batcher continue; test mode is unaffected. Blocking checkout relays is the conservative reading of this section (which named only x402 settles), to be revisited.
 
 ## 9. Relayer accounts and keys
 
 - Owner-provided account (e.g. `relayer.nearpay.near`); N function-call keys (Stage 1: N = 4) restricted to `intents.near` / `execute_intents`, allowance 5 NEAR each; private keys as files `relayer_key_<n>`; adding keys is a human-signed transaction (script prepares, owner signs).
-- Allowance monitor: below 20% → alert (RB-09); rotation = add new key, mark old `draining`, delete after in-flight drains.
+- Allowance monitor: job `relayer.allowance` every 5 min (`view_access_key`), gauge `relayer_allowance_near{key}`, alert below 1 NEAR (20% of 5; RB-09); rotation = add new key, mark old `draining`, delete after in-flight drains. Without owner-provided key files live relaying is off.
 
 ## 10. Integrations
 
-NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s), compliance screening (1 s, cached), payments internal (`agent_attempts` 8 s — it creates a rails execution), rails `GET /internal/executions/{id}` (1 s, relay validation) and `GET /internal/assets/{id}` (1 s, decimals + price for the minimum fee), identity `GET /internal/accounts/{id}/settlement-context` (1 s, cached 60 s: default Intents destination for `payTo`, fee schedule), Valkey (quotas, waiters).
+NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s; tried in order), compliance screening (1 s, cached), payments public `GET /v1/checkout/sessions/{id}/public` (client secret, no service token), payments internal (`agent_attempts` 8 s — it creates a rails execution), rails `GET /internal/executions/{id}` (1 s, relay validation) and `GET /internal/assets/{id}` (1 s, decimals + price for the minimum fee), identity `GET /internal/accounts/{id}/settlement-context` (1 s, cached 60 s: default Intents destination for `payTo`, fee schedule), Valkey (quotas, waiters).
 
 ## 11. Configuration
 
-`NP_NEAR_RPC_URLS`, `NP_INTENTS_CONTRACT` (`intents.near`), `NP_TREASURY_ACCOUNT`, `NP_RELAYER_ACCOUNT`, `NP_RELAYER_KEY_FILES` (glob), `NP_GAS_PER_PAYLOAD_TGAS` (15; SP-07), `NP_SETTLE_WAIT_MS` (8000), `NP_REQUIREMENT_TTL_MAX_S` (300), `NP_SANDBOX_BASE_URL` (test mode submits to sandbox `/sim/intents/*`).
+`NP_NEAR_RPC_URLS` (empty → live payloads refused), `NP_INTENTS_CONTRACT` (`intents.near`), `NP_TREASURY_ACCOUNT` (unset → live requirements refused), `NP_TEST_TREASURY_ACCOUNT` (`treasury.nearpay.near`, sandbox only), `NP_RELAYER_ACCOUNT`, `NP_RELAYER_KEY_FILES` (batcher; `*` in the file name, e.g. `/run/secrets/relayer_key_*`), `NP_GAS_PER_PAYLOAD_TGAS` (15; SP-07), `NP_SETTLE_WAIT_MS` (8000), `NP_REQUIREMENT_TTL_MAX_S` (300), `NP_REQUIREMENT_RATE_PER_S` (200), `NP_PAYER_RATE_PER_S` (10), `NP_BATCH_TICK_MS` (150), `NP_SANDBOX_BASE_URL` (test mode submits to sandbox `/sim/intents/*`; unset → test payloads refused), `NP_IDENTITY_URL`, `NP_PAYMENTS_URL`, `NP_RAILS_URL`, `NP_COMPLIANCE_URL`, `NP_SERVICE_CLIENT_SECRET_FILE`, `NP_PII_KEK_FILE` (idempotency store), `NP_VALKEY_URL` (settle waiters and quotas across replicas), `NP_NATS_URL` (batcher).
 
 ## 12. Security
 
@@ -152,3 +199,7 @@ Signature vectors (NEP-413 named + implicit, ERC-191, raw ed25519); every invali
 | 1 | x402 `intents-transfer` (supported/requirements/verify/settle), batcher, relayer pool, checkout `agent_pay`, `/internal/relay` for checkout `intents_transfer` |
 | 2 | relay for Intents-account refunds; agent payments in dashboard |
 | 3 | `near-intents` cross-chain method; MPP adapter evaluation |
+
+## 16. Ops CLI (Stage 1)
+
+`docker compose exec agentpay-api /nodejs/bin/node dist/ops.js <command>`: `payment` · `queue` · `keys` · `key-status` (drain / retire / activate) · `kill-switch`.

@@ -1,6 +1,6 @@
 # Audit — Whole-system LLD
 
-> Audited 2026-11-05 after all component audits. Result: **pass — LLD set is dev-ready.** Two passes; pass 2 found no new defects. Open external facts remain as spikes (SP-01, SP-02, SP-03, SP-04, SP-07, SP-14, SP-15), each with a defensive default already designed in.
+> Audited 2026-11-05 after all component audits. Result: **pass — LLD set is dev-ready.** Two passes; pass 2 found no new defects. Open external facts remain as spikes (SP-01, SP-02, SP-03, SP-04, SP-07, SP-14, SP-15), each with a defensive default already designed in. Updated 2026-11-06 for the step 1.2/1.3 implementation: SP-01, SP-14 and SP-15 resolved; traces T3, T5 and T7 adjusted below.
 
 ## 1. Method
 
@@ -36,15 +36,15 @@ Pass 2 re-ran checks 1–6 after the fixes: **no findings**.
 
 **T2 — Cross-chain checkout (EVM payer → USDC to merchant):** `POST /v1/checkout/sessions` (payments §8.1; identity settlement context; rails `GET /internal/destination-minimums`) → SPA loads (checkout §5) → options (payments → rails `GET /internal/options`) → attempt (payments §8.2: geo, Turnstile, window rule) → rails `POST /internal/executions` (rails §8.1: kill-switch flag, compliance screen, pricing, tag, 1Click quote, integrity + signature) → ticket → sentinel co-sign (sentinel §5 R1–R7) → SPA verifies (checkout §5.2) → wallet ERC-20 transfer → `deposit_tx` → rails `POST /internal/executions/{id}/deposit_tx` (1Click submit) → hot poller (rails §8.4) ∥ EVM watcher tag match (rails §8.7) → evidence → `evt.rails.execution.settled` → payments apply (§8.3) → `payment_intent.succeeded` + `checkout.session.completed` → webhooks ingest/dispatch (webhooks §6) via egress proxy → `merchant-demo` → notify receipt (payments receipt-context) → SSE → redirect. ✔
 
-**T3 — Checkout paid from a NEAR Intents balance (human):** attempt `method=intents_transfer` with `payer_wallet` (payments §6.2) → rails direct-intents requirement + binding (rails §8.1) → sentinel intents checks (sentinel §5) → wallet signs NEP-413/ERC-191 (checkout §5.4) → `signed_intent` → agentpay `POST /internal/relay` (agentpay §5) → batcher `execute_intents` (agentpay §7) → NEAR indexer binding match (rails §8.6) → settled → payments. ✔
+**T3 — Checkout paid from a NEAR Intents balance (human):** attempt `method=intents_transfer` with `payer_wallet` (payments §6.2) → rails direct-intents requirement + binding (rails §8.1) → sentinel intents checks (sentinel §5) → wallet signs NEP-413/ERC-191 (checkout §5.4) → `signed_intent` → agentpay `POST /internal/relay` (agentpay §5) → batcher `execute_intents` (agentpay §7) → NEAR indexer binding match on the DIP-4 `transfer` memo (rails §8.6, SP-14) → settled → payments. ✔
 
 **T4 — Agent pays an x402 API (merchant-demo `/premium`):** middleware → `POST /x402/requirements` (agentpay §5; identity context; rails assets) → `402 PAYMENT-REQUIRED` → `withX402` + agent-signer (sdks §2) → `PAYMENT-SIGNATURE` → `/x402/verify` (agentpay §6: signature, simulate, screening, quota) → `/x402/settle` → batcher → final outcome → `200` + `PAYMENT-RESPONSE`; `evt.agentpay.agent_payment.settled` → webhooks `agent_payment.settled`. ✔
 
-**T5 — Agent pays a checkout session:** `POST …/agent_pay/requirements` (agentpay → payments `agent_attempts` → rails) → sentinel verification by agent-signer (S-05) → `POST …/agent_pay {signed}` → verify against rails execution → relay → indexer → payments success. ✔
+**T5 — Agent pays a checkout session:** `POST …/agent_pay/requirements` (agentpay checks the client secret through payments' public session read, then payments `agent_attempts` → rails; agentpay §5) → sentinel verification by agent-signer (S-05) → `POST …/agent_pay {signed}` → matched to the handed-out requirement, verified against the rails execution → relay → indexer → payments success. ✔
 
 **T6 — Test mode end to end:** `sk_test_` session → rails sandbox provider (rails §12 assertions) → sandbox quote/status (sandbox §3–§4) → sentinel sandbox verification (sentinel §9) → SPA "Simulate payment" (payments `simulate_deposit`) → sandbox timeline → rails sandbox feed/verifier → payments → webhooks. Scenarios 00–07 map to the outcome matrix (domain-model §5). ✔
 
-**T7 — Kill switch:** genuine integrity mismatch (rails confirms issued address) → sentinel engages (sentinel §8) → `evt.sentinel.kill_switch.engaged` → rails `control_flags` (rails §7) and agentpay live settles paused (agentpay §8) → notify → ops CLI release (Stage 1). Spoofed request → refused only (L-SN-01). ✔
+**T7 — Kill switch:** genuine integrity mismatch (rails confirms issued address) → sentinel engages (sentinel §8) → `evt.sentinel.kill_switch.engaged` → rails `control_flags` (rails §7) and agentpay live x402 settles and live checkout relays paused (agentpay §8) → notify → ops CLI release (Stage 1). A merchant disabling a destination mid-checkout yields `stale`, never the switch (sentinel R5). Spoofed request → refused only (L-SN-01). ✔
 
 ## 4. Latency budget chains
 
