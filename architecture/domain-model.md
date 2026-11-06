@@ -1,6 +1,6 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
@@ -31,6 +31,7 @@
 | `ap_` | Agent (facilitator) payment | agentpay |
 | `evt_` | Event | webhooks |
 | `we_` | WebhookEndpoint | webhooks |
+| `whd_` | Webhook delivery | webhooks |
 | `case_` | Compliance case | compliance |
 | `scr_` | Screening result | compliance |
 | `pol_` | Geo policy | compliance |

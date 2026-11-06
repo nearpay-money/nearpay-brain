@@ -1,6 +1,6 @@
 # LLD — `nearpay-identity`
 
-> Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.4 (step 1.4, spec 0.1.5: `GET /v1/auth/session` and `POST /v1/settlement_destinations/{id}/challenge` §6, `challenge` command §5, `attestation_challenges.superseded_at` §4) · Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
@@ -137,7 +137,8 @@ create table destination_approvals (
 
 create table attestation_challenges (
   id uuid primary key, destination_id uuid not null references settlement_destinations(id),
-  message text not null, nonce bytea not null, expires_at timestamptz not null, used_at timestamptz);
+  message text not null, nonce bytea not null, expires_at timestamptz not null, used_at timestamptz,
+  superseded_at timestamptz);   -- migration 0003: set when a re-issued challenge replaces this unused one (kept apart from used_at)
 
 create table settlement_destination_transitions (… per foundations §7 …);
 
@@ -177,6 +178,7 @@ Migration note: `account_default_destinations` uses a generated column `coalesce
 | From | Event / command | Guard | To | Side effects |
 |---|---|---|---|---|
 | — | `create` (session, step-up ≤ 10 min, role owner/admin) | address valid for chain; `recovered_at` older than 48 h; screening `allow` (sync); unique constraint; test mode → skip to `active` with `verification='test'` | `pending_verification` | challenge (10 min), audit, event `created` |
+| `pending_verification` | `challenge` (session owner/admin, step-up) | — | `pending_verification` | fresh challenge (10 min); earlier unused challenges superseded in the same tx; audit `destination.challenge_issued`; no transition row or event |
 | `pending_verification` | `attest` | signature valid for message & key controls address (§8.2) | `pending_approval` or `cooling_off` | store attestation |
 | `pending_verification` | `mark_unverified` (owner, step-up) | chain family has no message signing **or** owner opts in; no live non-disabled row of another account has the same `(chain,address,asset)` | `pending_approval`/`cooling_off` | cap = 1,000 USD per payment |
 | `pending_approval` | `approve` (distinct admin/owner, step-up) | approvals ≥ required (`2` if account has ≥ 2 owner/admin members, else `1` = creator) | `cooling_off` | `active_at = now() + 24 h`; notify all owners/admins; job `destination.activate` |
@@ -197,6 +199,7 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `POST /v1/auth/passkeys/authentication/options` · `/verify` | anonymous | assertion of a discoverable credential, no email asked (no enumeration) → session cookie + CSRF token; signing in counts as a step-up (`step_up_until` = sign-in + 10 min) | `webauthn_failed` | — |
 | `POST /v1/auth/step_up/options` · `/verify` | session | assertion → `{step_up_until}` (10 min); any step-up-protected endpoint called without a fresh step-up returns `401 step_up_required` | `webauthn_failed` | — |
 | `POST /v1/auth/recovery` | anonymous (Turnstile) | `{email}` → `202`; link → new passkey, sets `accounts.recovered_at` | — | — |
+| `GET /v1/auth/session` | session cookie, any role (API keys `403`) | → the current `DashboardSession` with its CSRF token, re-issued from `csrf_enc` (never rotated, so open tabs keep working); sets no cookie (the sliding TTL applies as for any session request). The handler re-checks that the cookie names a valid (not revoked, expired or idle) dashboard session of the request principal's user and account, else `401 authentication_required` (also when the membership was removed) — spec 0.1.5 | `authentication_required` | — |
 | `POST /v1/auth/logout` | session | `204` | — | — |
 | `GET /v1/account` · `PATCH /v1/account` | session (PATCH: owner/admin) | account object (settings whitelist) | `invalid_setting` | yes |
 | `GET /v1/account/requirements` | session | `{live_enabled, missing:['kyb','destination']}` | — | — |
@@ -207,7 +210,8 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `DELETE /v1/api_keys/{id}` | session developer+ & step-up | `204` | — | — |
 | `GET /v1/settlement_destinations` | session any role; secret key read-only (`destinations.read`) | list incl. `min_payment_amount` (from rails, cached 1 h) | — | — |
 | `POST /v1/settlement_destinations` | session owner/admin & step-up | `{asset_id, type, chain, address, label}` → destination + `attestation_challenge {id, message, expires_at, signing_standard}` | `address_invalid`, `destination_in_use`, `recovery_lock`, `screening_blocked`, `memo_destination_unsupported`, `asset_unsupported` | yes |
-| `POST /v1/settlement_destinations/{id}/attest` | session owner/admin | `{challenge_id, standard, signature, public_key?}` | `attestation_invalid`, `challenge_expired` | yes |
+| `POST /v1/settlement_destinations/{id}/challenge` | session owner/admin & step-up | → destination + a fresh `attestation_challenge` (same helper and shape as on create) while `pending_verification`; earlier unused challenges are superseded in the same transaction; audited (`destination.challenge_issued`, number superseded); an idempotent replay returns the same challenge and supersedes nothing — spec 0.1.5 | `state_conflict` (any other status) | yes |
+| `POST /v1/settlement_destinations/{id}/attest` | session owner/admin | `{challenge_id, standard, signature, public_key?}`; a used, superseded or expired challenge is refused (checked again in the locking transaction) | `attestation_invalid`, `challenge_expired` ("…request a new challenge for the destination.") | yes |
 | `POST /v1/settlement_destinations/{id}/approve` | session owner/admin (≠ creator when 2 required) & step-up | `{decision}` | `approver_conflict` | yes |
 | `POST /v1/settlement_destinations/{id}/set_default` · `/disable` | session owner/admin & step-up | — | `destination_not_active` | yes |
 | `GET /v1/webhook_signing_keys` | anonymous | proxied by webhooks (not identity) | — | — |

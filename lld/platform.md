@@ -1,6 +1,6 @@
 # LLD — Platform (`nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` entry)
 
-> Version 1.3 (steps 1.2 and 1.3 implemented; changes in §1.2, local stand-in images in §1.3, testbed in §3) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
+> Version 1.4 (step 1.4: Compose follow-ups applied and `seed.sh live` §1/§1.2, E2E suites and confirmed scenario outcomes §3) · Version 1.3 (steps 1.2 and 1.3 implemented; changes in §1.2, local stand-in images in §1.3, testbed in §3) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
 
 ## 1. `nearpay-deploy/compose` — the v1 stack
 
@@ -34,9 +34,9 @@ compose/
 | `identity-api`, `identity-worker` | nearpay-identity | internal, data, egress (NEAR/EVM RPC for attestations §8.2, Turnstile) | postgres, nats, valkey |
 | `payments-api`, `payments-worker` | nearpay-payments | internal, data, egress (Turnstile siteverify) | identity-api, rails-api |
 | `rails-api`, `rails-tracker`, `rails-feeds` | nearpay-rails | internal, data, egress | postgres, nats, compliance-api |
-| `agentpay-api`, `agentpay-batcher` | nearpay-agentpay | internal, data, egress | postgres, nats (valkey: follow-up, §1.2) |
+| `agentpay-api`, `agentpay-batcher` | nearpay-agentpay | internal, data, egress | postgres, nats, valkey (step 1.4) |
 | `compliance-api`, `compliance-worker` | nearpay-compliance | internal, data, egress | postgres, nats |
-| `webhooks-api`, `webhooks-ingest`, `webhooks-dispatcher` | nearpay-webhooks | internal, data (dispatcher → egress-proxy only) | postgres, nats; dispatcher: egress-proxy (valkey: follow-up, §1.2) |
+| `webhooks-api`, `webhooks-ingest`, `webhooks-dispatcher` | nearpay-webhooks | internal, data (dispatcher → egress-proxy only) | postgres, nats; dispatcher: egress-proxy, valkey (step 1.4) |
 | `notify-api`, `notify-worker` | nearpay-notify | internal, data, egress | postgres, nats |
 | `billing-api`, `billing-worker` | nearpay-billing | internal, data, egress (RPC) | postgres, nats (Stage 3+) |
 | `sandbox-api` | nearpay-sandbox | internal, data | postgres |
@@ -79,7 +79,7 @@ ForwardAuth middleware: `http://identity-api:8080/internal/authz`, `authResponse
 
 **Service image contract:** `ARG NP_REGISTRY_URL` used for `@nearpay/*` and `@nearpay-internal/*` installs; `node dist/main.js <process>` (Compose passes `command: [dist/main.js, <process>]`, so the image's entrypoint is `node`); `HEALTHCHECK` runs `dist/main.js healthcheck` (built into `@nearpay-internal/service`, GET `:8080/healthz`); non-root UID 10001, read-only root FS (Compose enforces `read_only`, `tmpfs /tmp`, `cap_drop: ALL`, `no-new-privileges`, 35 s stop grace).
 
-**Scripts:** `up.sh [local] [--no-build]` (`--no-build` reuses existing images), `down.sh [--volumes]` (stops every profile), `seed.sh keys [--renew-tls]` (local keys and TLS; also creates `.secrets/merchant-demo/`, readable by UID 10001) and `seed.sh data`, `deploy.sh server` (Stage 5: pull digests, decrypt secrets, `docker compose up -d`, run migrations, smoke test), `backup-verify.sh`.
+**Scripts:** `up.sh [local] [--no-build]` (`--no-build` reuses existing images), `down.sh [--volumes]` (stops every profile), `seed.sh keys [--renew-tls]` (local keys and TLS; also creates `.secrets/merchant-demo/`, readable by UID 10001), `seed.sh data` and `seed.sh live` (step 1.4: validates the owner-provided mainnet credentials in `.secrets/live/` — `oneclick_api_key`, `explorer_token`, `relayer_key_1…4` — and writes `.secrets/live/compose.live.yaml` with only those present, which `up.sh`/`down.sh` include; what is missing stays off; nothing is generated or signed), `deploy.sh server` (Stage 5: pull digests, decrypt secrets, `docker compose up -d`, run migrations, smoke test), `backup-verify.sh`.
 
 **`seed.sh data`** (test mode, stack running): (1) runs identity's ops CLI `seed-demo` inside `identity-api` (owner, account, active test destination, test secret + publishable keys; idempotent on the email; identity §17) and writes its JSON to `.secrets/demo.json`; (2) writes the demo's secret key to `.secrets/merchant-demo/secret_key` and creates (once) the webhook endpoint `http://merchant-demo:3000/webhooks` for `payment_intent.*`, `checkout.session.*`, `agent_payment.*` through the API, storing its signing secret as `.secrets/merchant-demo/webhook_secret`; (3) tops the demo agent's simulated Intents balance up to 100 USDC with the sandbox ops CLI `intents-fund` (§3).
 
@@ -98,7 +98,7 @@ ForwardAuth middleware: `http://identity-api:8080/internal/authz`, `authResponse
 - All nine Stage 1 services run in the stack (27 containers healthy in the build workspace); `seed.sh data` is implemented through identity's `seed-demo` (above).
 - `up.sh` publishes the client SDK repos too; the merchant demo is built from its own package directory.
 - Static sites: per-response CSP nonces for the checkout and the dashboard; the js loader is cached for 5 minutes instead of a year.
-- Compose follow-ups reported by the service builds and not yet applied: `agentpay-api`/`agentpay-batcher` and `webhooks-dispatcher` depend on a healthy `valkey` (settle waiters, quotas, endpoint semaphores); the batcher needs `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` and the owner-provided `relayer_key_1…4` (live relaying is off without them); the webhooks services should receive `NP_WEBHOOK_SIGNING_KID` from `keys.env` (otherwise their default kid `wh-…` differs from the `local-…` kid deploy derives for the same key); the egress proxy should restrict ports to 80/443.
+- Compose follow-ups reported by the service builds, applied in step 1.4 (`nearpay-deploy` 5329223): `agentpay-api`/`agentpay-batcher` and `webhooks-dispatcher` depend on a healthy `valkey` (settle waiters, quotas, endpoint semaphores); the batcher gets `NP_RELAYER_KEY_FILES=/run/secrets/relayer_key_*` from the `seed.sh live` overlay when the owner provides `relayer_key_1…4` (live relaying is off without them); the webhooks services receive `NP_WEBHOOK_SIGNING_KID` from `keys.env` (otherwise their default kid `wh-…` differs from the `local-…` kid deploy derives for the same key). Still open: the egress proxy should restrict ports to 80/443.
 
 ### 1.3 Local stand-in images (machines that cannot pull registries)
 
@@ -144,7 +144,11 @@ fixtures/oneclick|near/     # recorded provider responses and mainnet receipts (
 
 **Scripted payer = checkout rules:** creates the attempt, verifies sentinel's co-signature with the pinned key (fail closed), then "Simulate payment" (`route_quote`) or signs the attested requirement (`intents_transfer`); Turnstile uses Cloudflare's always-pass test token.
 
-**E2E modes:** `NP_E2E=1` runs against the real stack; `NP_E2E=mock` runs the same suites (scenario 00, T2–T5) against the spec-validated mock stack, so suite logic is tested before step 1.4; slow scenarios run only with `NP_E2E_SLOW=1`. Scenario expectations to confirm in step 1.4 (`lib/scenarios.ts`): 02 and 04 end with the intent back in `requires_payment` (attempt refunded, session open) and `payment_intent.payment_failed`; 05 ends in `requires_review` with no succeeded event; 06 `succeeded` + `overpaid`; 07 `late: true`.
+**E2E modes:** `NP_E2E=1` runs against the real stack; `NP_E2E=mock` runs the same suites (scenario 00, T2–T5) against the spec-validated mock stack; slow scenarios (01, 02, 07, run concurrently) only with `NP_E2E_SLOW=1`. Set `NODE_EXTRA_CA_CERTS=../nearpay-deploy/.secrets/tls/ca.pem` explicitly.
+
+**E2E suites (step 1.4, all green against the full Compose stack in test mode):** `pnpm test:e2e` — `e2e/api/checkout` (T2/T6: session → sentinel-verified instructions → simulated deposit → signed webhooks; INV-2 evidence), `e2e/api/scenarios` (sandbox 00–07: final intent/attempt/session state, required and forbidden webhooks, statement lines), `e2e/api/kill-switch` (T7: a spoofed request is refused without engaging; drill engage → rails stops quoting and agentpay pauses → ops CLI release → both resume), `e2e/api/onboarding` (T1 ops half), `e2e/checkout/intents` and `e2e/agent/*` (T3 Intents balance with NEP-413, T4 x402 `/premium`, T5 agent pays a session); `NP_E2E=1 pnpm test:pw` (system Chrome) — `e2e/checkout/hosted.pw.ts` (hosted checkout: manual path, verified merchant + fingerprint, address after network confirmation, simulate, redirect, webhook) and `e2e/dashboard/onboarding.pw.ts` (T1: sign-up → magic link via Mailpit → passkey on a CDP virtual authenticator → live NEAR Intents destination signed with NEP-413 → cool-off skip → KYB → ops decision → `live_enabled`). The browser tests stub Turnstile with the always-pass test sitekey's dummy token (services answer the local test secret themselves) and serve an empty NEAR Connect manifest, so no third-party script loads; Chrome trusts the local certificate through its pinned SPKI (WebAuthn needs it). The scripted payer asks sentinel again (up to 4 tries) while it answers `503 attestation_unavailable`; every answer is still verified against the pinned key.
+
+**Scenario outcomes (confirmed in step 1.4 against domain-model §4–§5; `lib/scenarios.ts`):** 00 succeeded · 01 processing then succeeded · 02 attempt refunded at the 30 min quote deadline, intent back to `requires_payment` with `payment_intent.payment_failed`, session open (1 h session) · 03 succeeded, excess refunded (no overpayment) · 04 provider `FAILED` after the deposit → attempt `held` (`failed_after_deposit`), intent `requires_review` (`verification_held`) with `payment_intent.requires_review`, no succeeded or `payment_failed` event (the step 1.3 expectation of `requires_payment` + `payment_failed` was wrong) · 05 `requires_review` (`short_settlement`), no succeeded event · 06 succeeded + `overpaid` (`duplicate`) · 07 settles after the session's `expires_at` with `late: true`; it needs a **420 s** session, because USDC on Base has `min_deadline_s` 300 and a 300 s session is correctly refused as `route_too_slow`.
 
 ## 4. `nearpay` entry repo
 
