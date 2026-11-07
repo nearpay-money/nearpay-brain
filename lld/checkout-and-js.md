@@ -1,6 +1,6 @@
 # LLD — `nearpay-checkout` and `nearpay-js`
 
-> Version 1.4 (step 1.4, spec 0.1.5: tolerant response parsing §3, `np:complete` from `PublicCheckoutSession.payment_intent` §6) · Version 1.3 (step 1.3 implementation findings folded: build constants and CSP §2, UI states §4, rules §5, protocol and API §6, i18n and budget §7, tests §8, open items §10) · Version 1.1 audited (`audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
+> Version 1.5 (step 2.3, spec 0.2.0 + `@nearpay-internal/ui` 0.2.0: UI on the design system and the Figma checkout canvas §4.1, `change` / `use_manual` transitions §4, payment links §4.2, `PaymentOption.token` and `Attestation.asset` §5.2/§5.4, footer links §2) · Version 1.4 (step 1.4, spec 0.1.5: tolerant response parsing §3, `np:complete` from `PublicCheckoutSession.payment_intent` §6) · Version 1.3 (step 1.3 implementation findings folded: build constants and CSP §2, UI states §4, rules §5, protocol and API §6, i18n and budget §7, tests §8, open items §10) · Version 1.1 audited (`audits/checkout-and-js.md`) · ADR-0010 · Flows §2–§3 · FR-PAY-03, FR-PAY-06, FR-PAY-10 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -15,6 +15,7 @@ Vite build → hashed assets; `index.html` with strict CSP; served by nginx behi
 - `VITE_TURNSTILE_SITEKEY` — defaults to Cloudflare's always-pass test sitekey (pairs with the local test secret); production builds must set it.
 - `VITE_NEAR_RPC_URL` (default `https://free.rpc.fastnear.com`) — the wallet path needs NEAR view calls (`storage_balance_of`, `storage_balance_bounds`, Verifier `current_salt`).
 - `VITE_WALLETCONNECT_PROJECT_ID` (reserved; WalletConnect is not built in Stage 1, §10), `VITE_NEAR_NETWORK`.
+- `VITE_WEB_URL` (default `https://nearpay.money`) — hosted footer links Help (`/support`), Privacy, Terms; the embedded card shows no footer links.
 
 **CSP nonce on a static site:** `index.html` carries `'nonce-{{NP_CSP_NONCE}}'` in the meta CSP and `<meta name="np-csp-nonce">`; nginx replaces the placeholder with the per-response `$request_id` (`sub_filter`, pay `/` and `/embed/`; platform §1). NEAR Connect runs wallet executors in `srcdoc` frames that inherit the page CSP, so it cannot work without a real per-response nonce; its popup `<style>` elements are re-inserted with the nonce. Unsubstituted, the placeholder is an invalid CSP source: the policy stays strict and NEAR wallets are disabled.
 
@@ -64,18 +65,48 @@ stateDiagram-v2
   refunded --> choose_asset: try again (session open)
   succeeded --> [*]
 ```
+Step 2.3 adds two presentation transitions: `pay_wallet | verify_failed → choose_asset` on **change** (the review's "Change"; verified instructions are dropped, the next attempt hides the old one, §5.7) and `connect_wallet | choose_asset | pay_wallet → choose_asset (manual)` on **use_manual** ("Send from another wallet" on the wallet list and the desktop review). The machine also records `depositSeen` (the current attempt reached `deposit_detected…succeeded` in this page load) so a later `failed` reads "being returned" rather than "didn't complete".
+
 `review` shows "payment received — under review, don't pay again". `confirming` is also the resume state for an attempt still `quoting`. **Resume on reload:** a live `route_quote` attempt is re-verified with sentinel and shown on the manual path; a live `intents_transfer` attempt is not resumed (the payer starts a new attempt).
+
+### 4.1 Screens (step 2.3)
+
+Every screen is built from `@nearpay-internal/ui` (`CheckoutFrame`, `SelectionCard`, `Callout`, `CopyField`, `Countdown`, `Modal`, …) to the owner's Figma checkout canvas; the phase → frame mapping is code (`src/app/screens.ts`, unit-tested for every phase):
+
+| §4 phase | Figma frame(s) |
+|---|---|
+| loading | frame skeleton |
+| blocked | "This checkout can't be used" (reason text) |
+| choose_path | "Pay your way" (hosted) / "Choose how to pay" (embedded card) |
+| connect_wallet | "Connect a wallet" (EIP-6963 wallets + NEAR wallet, Cancel, "Send from another wallet instead") |
+| choose_asset | "Pay with" (search, "All networks" → "Choose a network", "Available for this payment", "No matching payment options" + Clear filters); manual path after a pick: "Send from another wallet" (token card + Change, refund address, "Check your sending network"); no options: "Try another wallet or currency" |
+| confirming, verifying | "Verifying this checkout" |
+| verify_failed | "We couldn't verify this checkout" (+ reason line) |
+| pay_wallet | review (token card with Change, Purchase / Payment fees / Total to send, wallet network-fee note, Pay, "Quote refreshes in mm:ss"); desktop: two-column with the summary on the left and "You send" + "Send from another wallet" in the card; "Review your updated total" after a re-quote whose attested total changed; test mode "Try a payment" + Simulate payment; "Approve in your wallet" while the wallet request is open; "Payment not approved" (wallet rejection); "Not enough funds" (wallet/RPC balance errors, `insufficient_balance`) |
+| pay_manual | "Send <amount>" (network callout, "I'm sending on <network>", memo + "I included the memo", then deposit address with copy + QR + "Expires in", exact amount, "I've sent the payment", "We confirm automatically…") |
+| needs_top_up | "We received less than expected" (Expected = attested amount; the same guarded instructions for the remainder) |
+| expired_address | manual: "This address has expired"; wallet: "Quote expired" ("Get a new quote" re-selects the same option and shows the updated total if it changed) |
+| processing | "Waiting for your payment" (attempt still `awaiting_deposit` — no "detected" claim), "Confirming your payment" (deposit detected), "Still confirming" after 2 min (Check status) |
+| review | "Payment under review" (Copy payment reference) |
+| succeeded | "Payment complete" (attested amount · network when paid in this page load; Return to <merchant> on hosted) |
+| refunded | `refunded` → "Your payment was returned" (refunded amount); `failed` after a detected deposit → "Payment being returned"; `expired_unpaid` → "Quote expired"; `failed` otherwise → "Try another wallet or currency" |
+
+Header: the **attested** merchant name (after verification only; before it the frame shows amount + description, never `merchant_name_unverified`), amount hero, description. Instruction screens carry a trust row ("Business details reviewed by NearPay" or "…not reviewed", from `merchant.kyb_verified`) that opens the **Payment details** sheet: merchant, "Reviewed" badge + "Business details reviewed by NearPay" (ADR-0020: never "verified identity"), payment destination (`<symbol> · <network>`), destination fingerprint in the dashboard's `XXXX-XXXX-XX` format (the Figma's 4×4 grouping is not used so payer and merchant compare identical strings), "Back to payment". Payment fees: the payer API states a fee only for Intents transfers (`requirement.fee_amount`); route quotes show "Included in total" (no payer fee breakdown in spec 0.2.0). References are the payment intent id. Focus moves to the new screen title only when the focused control disappeared; status changes are announced by live callouts.
+
+### 4.2 Payment links (Stage 2)
+
+`/l/:id` (id must match `plink_…`): anonymous `getPublicPaymentLink` → link page in the checkout frame (price hero, description as title, receipt email when `collect_email`, "Continue to payment"); `active: false` or `link_inactive` → "This payment link is no longer active"; 404 → "Payment link not found". "Continue" calls `createPaymentLinkSession`; the returned `client_secret` must belong to `checkout_session` (same check as `/c/` links), then the page `history.replaceState`s to `/c/<cs>#<client_secret>` (a reload resumes that session; §5.1 unchanged) and runs the normal session flow. The link's `merchant_name_unverified` is never rendered. Asset-priced links show base units until the session's options/attestation give decimals (no display data on `PublicPaymentLink`).
 
 ## 5. Critical rules
 
 1. **Client secret** comes from the URL fragment, is kept in memory only, never logged, never stored. The fragment is left in the address bar so a reload keeps working.
-2. **Two-party release (FR-PAY-10):** after `POST …/attempts`, call `POST /v1/attestations/deposit_instructions` with the attempt's instructions and its `attestation_ticket`; verify `signature` with a pinned key (`kid` must be pinned), JCS over `attestation` **exactly as received** (unknown fields included), and assert every displayed field equals the attested field (address, memo, chain, origin asset, amount_in, deadline, pay_to/requirement), `expires_at ≤ deadline` and `expires_at > now`; instructions are hidden at `min(deadline, expires_at)`. Render the **attested** merchant name, KYB badge and destination fingerprint; `display.merchant_name_unverified` is never rendered, not even before verification (L-CK-03). The session's `settlement.{asset_id, chain}` is not compared with the attested destination (both come from sources the checkout does not trust; the payer checks name + fingerprint). Any failure → no address, no wallet prompt.
+2. **Two-party release (FR-PAY-10):** after `POST …/attempts`, call `POST /v1/attestations/deposit_instructions` with the attempt's instructions and its `attestation_ticket`; verify `signature` with a pinned key (`kid` must be pinned), JCS over `attestation` **exactly as received** (unknown fields included), and assert every displayed field equals the attested field (address, memo, chain, origin asset, amount_in, deadline, pay_to/requirement), `expires_at ≤ deadline` and `expires_at > now`; instructions are hidden at `min(deadline, expires_at)`. Render the **attested** merchant name, KYB badge and destination fingerprint; `display.merchant_name_unverified` is never rendered, not even before verification (L-CK-03). The session's `settlement.{asset_id, chain}` is not compared with the attested destination (both come from sources the checkout does not trust; the payer checks name + fingerprint). When the attestation carries `asset` (spec 0.2.0, CR-15-07) its `asset_id` must equal `deposit.origin_asset_id` / `requirement.token` (else `field_mismatch: asset`), and its `decimals`/`symbol` are used to display `amount_in` in preference to the payment options. Any failure → no address, no wallet prompt.
 3. **Embedded mode origin check:** the parent bridge is installed before React renders (an early `np:init` is buffered). The iframe accepts `np:init` only from the parent window with `event.origin ∈ session.allowed_origins`; also checks `location.ancestorOrigins[0]` when available. A disallowed parent is blocked at once; `np:init` from any other window is ignored; the embed route opened top-level → `blocked`. Blocked states reached after verification are reported with `np:error {code: <reason>}`. Appearance: theme `light|dark|auto`, accent `#rgb`/`#rrggbb`, radius 0–24 px (CSS custom properties).
 4. **Wallet path builds the transfer inside the iframe:**
    - EVM ERC-20: `transfer(depositAddress, amount_in)` on the token contract; enforce `chainId` switch; native asset: value transfer.
    - NEAR NEP-141: check `storage_balance_of(deposit)`; batch `storage_deposit` (if needed) + `ft_transfer({receiver_id: deposit, amount: amount_in, memo})` via NEAR Connect `signAndSendTransactions`; wNEAR from native NEAR: `near_deposit` + transfer in the same batch.
    - Intents balance (`intents_transfer` attempts): build the Verifier message (foundations §14) from the attested requirement; NEAR wallets sign NEP-413 (`signMessage({message, recipient:'intents.near', nonce})`); EVM wallets sign ERC-191 (`personal_sign` of the payload string); submit to `…/attempts/{pa}/signed_intent`.
-   - Wallet assets: EVM only for omft-bridged assets (`nep141:<prefix>-0x<contract>.omft.near`, native `nep141:<prefix>.omft.near`) whose prefix belongs to the option's chain (eth/base/arb/gnosis); NEAR for NEP-141 token accounts; `wrap.near` always wraps the full amount from native NEAR. Other assets are manual-path only (a typed token field on payment options is requested: CR-15-06, not in spec 0.1.5).
+   - Wallet assets: the recipe derived from the **attested** asset id wins — EVM omft-bridged assets (`nep141:<prefix>-0x<contract>.omft.near`, native `nep141:<prefix>.omft.near`) whose prefix belongs to the option's chain (eth/base/arb/gnosis); NEAR NEP-141 token accounts; `wrap.near` always wraps the full amount from native NEAR. Otherwise `PaymentOption.token` (spec 0.2.0, CR-15-06) adds `erc20` (valid `0x` address) and `native` on EVM chains and `nep141` on NEAR, used only for the option whose asset id and chain equal the attested ones; `spl`, `other`, unknown standards and malformed addresses stay manual-path only; a token that contradicts the derivable recipe disables the wallet path (fail closed). The token contract itself is not attested (residual: a compromised payments API could make the wallet send another token to the attested deposit address, which 1Click refunds or loses — never redirects to a third party); attesting it is a sentinel request (§10).
    - Intents signing in test mode uses the sandbox salt `5a0dbe11`, never a mainnet salt, so a test payload cannot execute on mainnet.
    - After broadcast → `…/deposit_tx {tx_hash}`. Failures of `submitDepositTx` / `signalDepositSent` are ignored (detection works without them).
 5. **Manual path guards:** network name + icon above the address; checkbox "I'm sending on <network>"; memo shown first with checkbox "I included the memo" when present; address, amount and QR are revealed only after the checkboxes are ticked, and "I've sent it" stays disabled until then; QR encodes EIP-681 for EVM ERC-20s / plain address otherwise (native assets included); refund address required, validated per chain, warning "use a wallet you control, not an exchange deposit address".
@@ -101,7 +132,7 @@ API: `const np = NearPay('pk_live_…', {payOrigin?}); const checkout = np.mount
 
 ## 7. Accessibility, i18n, performance
 
-WCAG 2.2 AA; English in v1 with a flat message catalog using `{var}` placeholders (no ICU plural rules needed yet); initial JS ≤ 180 KB gzipped (143 KB at step 1.3; wallet SDKs lazy-loaded on "Pay with wallet", NEAR Connect 14 KB); first paint < 1.5 s on 4G.
+WCAG 2.2 AA; English in v1 with a flat message catalog using `{var}` placeholders (no ICU plural rules needed yet); initial JS ≤ 180 KB gzipped (143 KB at step 1.3, 167.9 KB at step 2.3 with the design system; wallet SDKs lazy-loaded on "Pay with wallet", NEAR Connect 14 KB); first paint < 1.5 s on 4G.
 
 ## 8. Tests
 
@@ -109,11 +140,13 @@ Unit: vectors from `@nearpay/spec/test-vectors` (attestations, fingerprints, NEP
 
 ## 9. Stage mapping
 
-Stage 1: hosted + embed, NEAR + EVM wallets, manual path, Intents-transfer signing, sentinel verification, SSE, test mode, js loader + React. Stage 2: payment links. Stage 3: hosted invoices. Stage 4: Solana wallets.
+Stage 1: hosted + embed, NEAR + EVM wallets, manual path, Intents-transfer signing, sentinel verification, SSE, test mode, js loader + React. Stage 2: payment links (built in step 2.3, §4.2), UI on the design system (§4.1). Stage 3: hosted invoices. Stage 4: Solana wallets.
 
 ## 10. Open items from step 1.3
 
 - WalletConnect (§3) is not built; `VITE_WALLETCONNECT_PROJECT_ID` is reserved. EVM wallets are injected (EIP-6963).
 - Wallet balances are not fetched client-side; the server ranks options with `?wallet=`.
-- Amounts are displayed with decimals and symbol from payments' payment options, which are not attested. Misreported decimals can only cause an over- or underpayment that the route refunds, never a redirect of funds (attesting them is a later sentinel request, `roadmap/open-questions.md`).
+- ~~Amounts are displayed with decimals and symbol from payments' payment options, which are not attested.~~ Since step 2.3 the attested `Attestation.asset` decimals/symbol are preferred when sentinel sends them; the options remain the fallback for older sentinels.
+- `DestinationSnapshot.fingerprint` (CR-15-04) is on merchant objects only; checkout shows the attested `destination.fingerprint` (the payer API has no snapshot).
+- Open spec requests from step 2.3: a payer-visible fee breakdown for route quotes (Payment fees shows "Included in total"), the detected amount for `incomplete_deposit` ("Detected" row of "We received less than expected"), display data (symbol/decimals) of the pricing asset on `PublicPaymentLink`/`PublicCheckoutSession`, and the token contract in `Attestation.asset` (`token: TokenContract`).
 - ~~NEAR Connect loads a remote, mutable manifest~~ Resolved in step 1.4 (checkout #3, dashboard #3): the manifest is a reviewed snapshot passed as an object (`src/wallets/near/manifest.ts`, refreshed with `scripts/pin-near-manifest.mjs`); executor URLs are pinned to full commit SHAs and fetched with SRI `integrity` (a `fetch` wrapper; the library has no integrity option); cached executors with another hash are purged from IndexedDB before a wallet runs; debug wallets and `ParentFrameWallet` (postMessage, no origin check) are refused; `autoConnect` is off. Wallets whose executors live on vendor servers (intear, near-mobile, trezu, ethereum-wallets) are left out. Re-check the library's `executor.js` on every upgrade (the SRI wrapper relies on global `fetch`). Real wallets are untested in the build environment: their own API hosts may need adding to `connect-src` after the first mainnet test.
