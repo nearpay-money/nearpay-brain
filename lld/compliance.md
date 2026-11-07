@@ -247,4 +247,4 @@ No network path exists for these actions in Stage 1 (Stage 2 moves them to the c
 - **`assignOpsCase`** checks the assignee with identity `getInternalOpsOperator` (`identity.operators.read`): unknown or `active: false` → `400 invalid_request` (`assignee`); identity unavailable → fail closed.
 - `createScreening.fresh: true` bypasses the screening cache.
 - `listOpsCases` `subject` filter: exact `subject.id`.
-- Ops-action events from the CLI may use `actor.sub = cli@<host>[:<name>]` without `ops_role`; envelope `aggregate.id` = `aud_<TypeID>` (now in the spec).
+- Ops-action events are published for console actions only (a CLI actor was rejected in 0.2.1 as breaking); envelope `aggregate.id` = `aud_<TypeID>` (now in the spec).

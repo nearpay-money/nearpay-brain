@@ -214,6 +214,6 @@ Stage 1: everything above except two-person kill-switch release (Stage 2 console
 ## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
 
 - **`getKillSwitch` `GET /internal/kill-switch`** (`service:sentinel.read`, held by payments, rails, agentpay) → `KillSwitchState` with `version` (= the switch row version, the `aggregate.version` of the latest `kill_switch.*` event). Never cached; read straight from the `kill_switch` row. `setKillSwitch`/`getOpsKillSwitch` responses may carry `version` too.
-- **Ops-action events from the CLI:** `OpsActionEvent.actor.sub` accepts `cli@<host>[:<name>]` and `ops_role` is optional for it, so the CLI's engage/release now publish `evt.sentinel.ops_action.recorded` (supersedes "the ops CLI publishes no ops-action event" in §6). Object `id` stays the bare uuid; envelope `aggregate.id` = `aud_<TypeID>` (now documented in the spec).
+- **Ops-action events from the CLI:** not published — a CLI actor on `OpsActionEvent` was rejected in 0.2.1 as breaking (oasdiff); CLI actions stay in the service's own log, envelope `aggregate.id` = `aud_<TypeID>`.
 - **`Attestation.asset.token`** (`TokenContract`, nullable): from sentinel's own registry read (`contractAddress` of the 1Click token; `native` without contract; null when the registry has none). Signed with the rest of the attestation.
 - **`OpsAuditFinding.account_display_name`**: sentinel consumes `evt.identity.account.created` / `.updated` and keeps a display-name map (version-checked); null when unknown.
