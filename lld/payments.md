@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` 0.2.0: data §4, refund rules §5, API §6 (console reconciliation on `/ops/…` §6.4), events §7, refund algorithm §8.4 (kill switch), jobs §9 (`reconciliation_diff` cases), decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.7 (step 2.2 implementation decisions §18: refund budgets and duplicate accounting §5, `sign_intent` nonces, reconciliation day of a statement line, ops-action envelope id, FX pricing, link success page) · Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` 0.2.0: data §4, refund rules §5, API §6 (console reconciliation on `/ops/…` §6.4), events §7, refund algorithm §8.4 (kill switch), jobs §9 (`reconciliation_diff` cases), decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -214,7 +214,7 @@ Client secrets: `cs_…_secret_<32 base62>`; stored as SHA-256; compared constan
 | `requires_action` | leg deadline passed, nothing submitted | `requires_action` (leg `expired`, `next_action` null) | merchant calls `prepare` (new leg) |
 | `failed` | `prepare` | `requires_action` | re-reserve (refundable check) |
 | `requires_action` | `cancel` (nothing submitted on the current leg) | `canceled` | pending released; event `canceled` |
-| `succeeded` | another leg settles | unchanged | leg `duplicate`, `extra_amount_sent += leg.amount`, statement `refund` line for the leg, `amount_refunded` += (may exceed the original refund) |
+| `succeeded` | another leg settles | unchanged | leg `duplicate`, `extra_amount_sent += leg.amount`, statement `refund` line for the leg; `amount_refunded` unchanged (§18 item 1) |
 | `canceled`/`failed` | an older leg still settles (merchant had sent) | `succeeded` | INV-3 (truth wins): recorded like a success; needs domain-model §4.4 edge `canceled/failed → succeeded` (requested from brain) |
 
 ## 6. API
@@ -477,3 +477,51 @@ Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.
 14. **Reviews as webhooks.** Compliance reviews are delivered as `review.opened` / `review.closed` with `PublicReview`; a review of an execution is shown as a review of its payment intent (`Review.payment_intent`, filled by compliance from `Execution.reference`, which rails echoes from the create request — payments sends `reference` on payment executions from Stage 2). Unattributable reviews are not delivered.
 15. **Refund receipts.** notify resolves the recipient via `GET /internal/refunds/{id}/receipt-context` (customer email of the intent or its session; never in events).
 16. **Kill switch blocks live refunds (lead decision, integration).** While the kill switch is engaged, payments refuses to prepare new **live** refund legs (`create`, `prepare` → `503 rail_unavailable`) and agentpay refuses live refund relays (`kind: refund`, agentpay §8), fail closed: the deposit-instruction integrity concern that triggers the switch applies to refund route legs too. Legs already funded by the merchant keep being tracked and verified (truth wins, INV-3). Test mode is unaffected; refunds resume on release.
+
+## 18. Step 2.2 implementation decisions (nearpay-payments `stage-2/2.2-payments`, spec 0.2.0, kit 0.2.0)
+
+1. **Refund budgets; Σ refunded ≤ settled always.** A refund reserves its `amount` in a budget: the intent's
+   (`amount_settled/refunded/refund_pending`) when it refunds the attempt that paid a `succeeded` intent, otherwise the
+   attempt's own (`payment_attempts.amount_refunded/amount_refund_pending`, check `refunded + pending ≤ settled_amount`)
+   — overpayments and rejected short settlements. Duplicate legs never touch `amount_refunded` (supersedes the §5 row
+   "`amount_refunded` += …", which would violate the intent's check constraint and the invariant); they add to
+   `extra_amount_sent`. A late success of a `canceled`/`failed` refund (INV-3) counts only what still fits the budget
+   (`refunds.amount_counted`); the rest is `extra_amount_sent`. Property-tested (`test/property/refunds.property.test.ts`):
+   every unit that left the merchant through a settled leg = counted + extra.
+2. **Leg states.** A `succeeded` execution without evidence makes the leg `held` (INV-2). A merchant-reported tx hash
+   marks the leg `submitted` but the refund stays `requires_action` until rails detects the deposit; a relayed signed
+   payload moves the refund to `pending`. A `pending` refund whose last moving leg returns, fails or expires becomes
+   `failed` (prepare again). `prepare` on a never-prepared leg re-asks rails with the same key (no second leg); a new
+   leg needs the current one expired/failed/past its deadline. Legs in `preparing` are not listed in `Refund.legs`
+   (the spec requires a deadline). Consumer events for a leg still `preparing` are retried until the recovery job links
+   it (the next action must exist first).
+3. **`sign_intent` nonce.** Payments needs the Verifier salt: live mode reads `current_salt` over NEAR RPC
+   (`NP_NEAR_RPC_URLS`, 60 s cache — a new egress for payments, deploy must allow it); test mode uses the sandbox salt
+   `5a0dbe11`. A salt read failure is transient (leg stays `preparing`). The payload deadline is exactly
+   `RefundTransfer.deadline`. Wallets must sign the exact strings (`nep413.message` / `payload`); `next_action.message`
+   is display-only (stored as jsonb, key order not preserved). `submit_tx` verifies the signature locally
+   (`intent_invalid`) and byte-compares with the issued payload (`signed_intent_mismatch`) before relaying.
+4. **Relay.** agentpay `POST /internal/relay` timeout 8 s with one idempotent retry; the relay happens before the leg is
+   marked `submitted`, outside any row lock; `getInternalRefund` is a plain read.
+5. **Kill switch.** Checked before any refund row is written (create/prepare/recipient/relay → `503 rail_unavailable`,
+   live only). The recovery job skips live legs while engaged (they fail with `rail_timeout` after 2 min, releasing the
+   reservation). A review `reject` while engaged records the decision without a draft refund.
+6. **Reconciliation.** A statement line's evidence day is its execution's `terminal_at` (new columns
+   `balance_transactions.execution_id`, `terminal_at`; Stage 1 lines fall back to `created_at` and are linked through
+   their attempt), so consistent data reconciles to zero diffs. Outflow compares the refund line's `settled` with
+   `Execution.refund.amount` and `received` with `settled_amount`. A scheduled run starts only when rails' summary is
+   `complete` (otherwise the job retries); an ops run of an incomplete day ends `error`. Runs where the evidence pages
+   disagree with the summary count end `error`. Transient failures retry twice before `error`. Fees: rails reports no
+   observed fee on executions, so `fees.observed` is null and `fee_mismatch` cannot fire yet (change request). Completed
+   runs are immutable by trigger, except setting `resolution` and `case_id` once.
+7. **Ops actions** go out with envelope `aggregate.id = aud_<action uuid>` (the outbox needs a prefixed id; same choice
+   as compliance); identity dedupes on `data.object.id`.
+8. **FX pricing.** `NP_PRICING_CURRENCIES` defaults to `usd,eur,gbp,chf,jpy,cad,aud`; non-USD currencies need rails
+   `GET /internal/fx-rates` (absent → `currency_unsupported`; unavailable/stale or rails down → `fx_rate_unavailable`) and
+   are valued with `GET /internal/settlement-estimate` for minimums, the unverified cap (fails closed) and payment options.
+9. **Payment links.** A link without `success_url` sends payers to `<pay origin>/l/<plink>/complete`; `customer_email`
+   is kept only when the link collects it; rate limits are per replica (the gateway adds its own).
+10. **Customers.** Email lookup hash key = HMAC(KEK, "nearpay:payments:customer-email:v1"); DELETE also clears
+    description, wallets and metadata; a deleted customer reads as 404. Receipt email = the session's, else the
+    customer's (unless deleted), for payment and refund receipts.
+11. **Execution reference.** Payment executions now send `reference {payment_intent, payment_attempt}` (§17 item 14).
