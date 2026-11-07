@@ -443,6 +443,8 @@ Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): obser
 - Integration: indexer parsing on recorded mainnet blocks (fixtures from SP-14); EVM watcher against an Anvil fork with Transfer logs; verifier tiers.
 - Load: hot poller at 1,000 in-flight executions within budget.
 
+**Unified console audit trail (T-12, step 2.1 integration).** `reverifyOpsExecution` publishes `evt.rails.ops_action.recorded` (`OpsActionEvent`, ids only, via the outbox in the same transaction); identity records it in `audit_events`.
+
 ## 16. Stage mapping
 
 | Stage | Scope |

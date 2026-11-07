@@ -447,6 +447,8 @@ execution events (version-checked, like §8.3; matched by refund_legs.execution_
 - Integration: create session → attempt (rails mocked from spec) → apply events → webhooks events emitted; idempotent replays; SSE delivers updates.
 - Sandbox scenarios 00–07 (`api-conventions.md` §8) end-to-end in testbed.
 
+**Unified console audit trail (T-12, step 2.1 integration).** Every console write payments executes (reconciliation run create/resolve, ops refund actions) also publishes `evt.payments.ops_action.recorded` (`OpsActionEvent`, ids only, in the same transaction via the outbox); identity records it in `audit_events` so the console shows one audit trail.
+
 ## 16. Stage mapping
 
 | Stage | Scope |

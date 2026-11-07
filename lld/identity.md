@@ -283,7 +283,7 @@ Every console write (here and in the other services) is audited with `actor_type
 | `evt.compliance.kyb.submitted` (step 2.1) | set `kyb_status = pending` |
 | `evt.compliance.destination.blocked` | disable destination with reason `compliance` |
 | `evt.compliance.account.suspended` / `.reinstated` | set account `status` |
-| `evt.compliance.ops_action.recorded` · `evt.sentinel.ops_action.recorded` (step 2.1 integration) | insert into `audit_events` (one console audit trail, §6.1); idempotent on the action id |
+| `evt.compliance.ops_action.recorded` · `evt.sentinel.ops_action.recorded` · `evt.payments.ops_action.recorded` · `evt.rails.ops_action.recorded` (step 2.1 integration) | insert into `audit_events` (one console audit trail, §6.1); idempotent on the action id |
 
 ## 8. Algorithms
 
