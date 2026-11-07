@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.5 (step 2.1 contracts: secret rotation and resend §5, `account.updated` and `review.*` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -70,9 +70,9 @@ Retention: events, deliveries and attempts 30 days (daily purge).
 | `evt.billing.subscription.{created,updated,deleted,renewal_upcoming}` | `customer.subscription.<same>` | subscription |
 | `evt.billing.mandate.{activated,collected,insufficient_funds,canceled,exhausted}` | `mandate.<same>` | mandate |
 | `evt.agentpay.agent_payment.{settled,failed}` | `agent_payment.<same>` | agent_payment |
-| `evt.identity.account.updated` | `account.updated` (Stage 2; not consumed in Stage 1 — the catalogue does not route it to webhooks yet) | account (public fields) |
+| `evt.identity.account.updated` | `account.updated` (step 2.1: the catalogue routes it to webhooks) | account (public `Account`) |
 | `evt.identity.settlement_destination.{cooling_off,activated,disabled}` | `settlement_destination.{pending,activated,disabled}` | settlement_destination |
-| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` | review |
+| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks; `Review` now lives in `@nearpay/spec`) | review |
 
 Everything else (attempt, execution, internal events) is never exposed. Rendering per endpoint `api_version` is done by version transformers in `@nearpay/spec` (`webhooks/versions/*.ts`). Since spec 0.1.5 CheckoutSession and AgentPayment carry their own `sequence` too (payments and agentpay send their aggregate version). The producer's `sequence` is preferred: ingest stores it as `object_sequence` and rendering keeps it; only an object without a valid one (a producer older than 0.1.5) gets `aggregate.version` (api-conventions §9).
 
@@ -82,11 +82,11 @@ Everything else (attempt, execution, internal events) is never exposed. Renderin
 |---|---|---|
 | `POST /v1/webhook_endpoints` | secret key `webhook_endpoints.write` or session developer+ | `{url (URL policy below), enabled_events, api_version?, description?}` → endpoint + `secret` (`whsec_…`, once); `*` anywhere in `enabled_events` normalises to `["*"]`, duplicates are dropped. The idempotent response (it carries the secret) is stored encrypted with the endpoint-secret KEK |
 | `GET /v1/webhook_endpoints` · `/{id}` · `PATCH` · `DELETE` | same (read/write) | URL changes re-validate SSRF rules |
-| `POST /v1/webhook_endpoints/{id}/rotate_secret` | write | `{expire_previous_in_seconds ≤ 86400}` → new secret; both signatures sent during overlap |
+| `POST /v1/webhook_endpoints/{id}/rotate_secret` (`rotateWebhookEndpointSecret`, step 2.1) | write | `{expire_previous_in_seconds 0–86400, default 86400}` → endpoint with the new `secret` (once) and `previous_secret_expires_at`; during the overlap the current secret moves to `secondary_secret_enc` and every delivery carries both `v1=` signatures; rotating again during an overlap replaces the secondary with the then-current secret; `0` drops the previous secret at once; the idempotent response is stored encrypted like create's |
 | `POST /v1/webhook_endpoints/{id}/test` | write | stores a `ping` event (listed by `GET /v1/events`, `object_sequence 0`, no `sequence` injected, `request` = the API request) and delivers it to that endpoint regardless of its subscriptions; disabled endpoint → `409 state_conflict` |
 | `GET /v1/webhook_endpoints/{id}/deliveries` | read | delivery log (spec 0.1.5, Stage 1): cursor list of `WebhookDelivery` summaries (`whd_…`: `webhook_endpoint`, `event`, `event_type`, `status`, `attempts`, `last_status_code`, `last_error`, `next_attempt_at` only while an attempt is due, `succeeded_at`), newest first, last 30 days (hidden before the purge, like events). Keyset paging on `(created_at, id)` because pre-1.4 rows have random UUIDs; a cursor must be a delivery of the same endpoint (`400` otherwise). The endpoint must be the caller's, in its mode, not deleted (`404`) |
 | `GET /v1/events` · `/{id}` | `events.read` | filters `type`, `created[gte/lte]`; rendered in the latest API version (`2026-11-01`: webhooks has no outbound edge to read the account's pinned version); events older than 30 days are hidden even before the purge runs |
-| `POST /v1/events/{id}/resend` | write | `{endpoint?}` → new delivery |
+| `POST /v1/events/{id}/resend` (`resendEvent`, step 2.1) | write | `{endpoint?}` → `202 EventResend {event, deliveries[]}`: one new delivery (UUIDv7, fresh schedule) per endpoint — the given one (must be the caller's, same mode, enabled, else `409 state_conflict`; subscriptions ignored, like `test`) or every enabled endpoint subscribed to the type; `deliveries.unique(event_id, endpoint_id)` becomes `unique(event_id, endpoint_id, resend_no)` with `resend_no smallint not null default 0`; events older than 30 days are `404` |
 | `GET /v1/events/stream` | `events.read` (test mode or session) | SSE of new events (CLI `listen`, Stage 3) |
 | `GET /v1/webhook_signing_keys` | anonymous | JWKS of Ed25519 keys |
 
@@ -156,5 +156,5 @@ Signature vectors shared with `@nearpay/node` verify helper; retry schedule; aba
 | Stage | Scope |
 |---|---|
 | 1 | endpoints CRUD, ingest for payments + agentpay events, dispatch with HMAC + Ed25519, retries, events API, signing keys, egress proxy, delivery log (`GET …/deliveries`, step 1.4, spec 0.1.5) |
-| 2 | refunds/account/review events, secret rotation, resend |
+| 2 | refunds (payments' types) / account / review events, secret rotation, resend (step 2.1 contracts) |
 | 3 | billing/mandate events, `GET /v1/events/stream` for CLI |

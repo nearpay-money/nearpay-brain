@@ -1,17 +1,17 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
-**Owns:** address/account screening (pre and post), screening cache, blocklist, geo policy, KYB cases and vendor integration, compliance cases, destination re-screening, account suspension decisions.
+**Owns:** address/account screening (pre and post), screening cache, blocklist, geo policy, KYB cases (self-declared minimum business details + ops decision; no KYB vendor, ADR-0020), compliance cases, destination re-screening, account suspension decisions (two-person rule).
 **Policy is data:** region blocking needs Cloudflare's visitor-location headers (`cf-ipcountry`, `cf-region-code` managed transform) on the server stage; jurisdiction-specific thresholds live in `policies` rows, not code (jurisdiction undecided).
 
 ## 2. Runtime
 
 | Compose service | Command | Replicas |
 |---|---|---|
-| `compliance-api` | `api` | 2 (internal only + vendor webhook route + KYB start for dashboard) |
+| `compliance-api` | `api` | 2 (internal routes + dashboard KYB routes `/v1/account/kyb…` + console routes `/ops/…`; no vendor webhook route in v1) |
 | `compliance-worker` | `worker` | 1 (list refresh, re-screening, consumers, outbox relay) |
 
 ## 3. Data
@@ -35,7 +35,8 @@ create index sanctions_entries_address on sanctions_entries (address_norm);   --
 create table sanctions_lists (source text primary key, fetched_at timestamptz not null, entries integer not null, sha256 bytea not null);
 
 create table blocklist (subject_type text not null, subject text not null, reason text not null, created_by text not null,
-  created_at timestamptz not null default now(), primary key (subject_type, subject));
+  created_at timestamptz not null default now(), primary key (subject_type, subject),
+  id uuid not null unique default gen_random_uuid(), chain text);   -- step 2.1: API id bl_…, optional chain (console routes)
 
 create table screenings (
   id uuid primary key, subject_type text not null check (subject_type in ('address','near_account','destination')),
@@ -47,18 +48,35 @@ create index screenings_cache on screenings (subject_type, chain, subject_norm, 
 create table kyb_cases (
   id uuid primary key, account_id uuid not null unique, status text not null
     check (status in ('not_started','pending','needs_info','approved','rejected')),
-  vendor text, vendor_applicant_id text, level text, decision_reason text, decided_by text,
+  decision_reason text, decided_by text,
+  -- step 2.1 (ADR-0020): self-declared profile instead of vendor columns. The Stage 1 columns vendor,
+  -- vendor_applicant_id and level stay in the table (always null) until a later migration drops them.
+  profile_enc bytea,                        -- envelope-encrypted JSON of `KybProfile` (legal name, country of incorporation,
+                                            -- registration number, business type, website, address, representative, volume band)
+  declared_by uuid,                         -- owner (user id) who submitted the declaration
+  requested_info text,                      -- shown to the merchant while needs_info (never the internal decision_reason)
+  submitted_at timestamptz,
   created_at timestamptz not null default now(), decided_at timestamptz, version integer not null default 0);
 create table kyb_case_transitions (… per foundations §7 …);
+
+create table ops_approvals (               -- step 2.1: two-person rule for account suspend/reinstate (`OpsApproval`, opa_)
+  id uuid primary key, action text not null check (action in ('account.suspend','account.reinstate')),
+  account_id uuid not null, reason text not null,
+  status text not null check (status in ('pending','approved','rejected','expired')),
+  requested_by uuid not null, requested_role text not null, requested_at timestamptz not null default now(),
+  decided_by uuid, decided_role text, decided_at timestamptz, decision_note text, expires_at timestamptz not null,
+  check (decided_by is null or decided_by <> requested_by));   -- the database repeats the server-side rule
+create unique index ops_approvals_one_pending on ops_approvals (account_id) where status = 'pending';
 
 create table account_flags (account_id uuid primary key, suspended boolean not null, reason text not null, actor text not null,
   version integer not null default 1, updated_at timestamptz not null default now());   -- suspension decisions
 
 create table cases (
   id uuid primary key, account_id uuid, livemode boolean not null,
-  kind text not null check (kind in ('screening_hit','post_screen_hit','held_execution','audit_mismatch','merchant_report')),
+  kind text not null check (kind in ('screening_hit','post_screen_hit','held_execution','audit_mismatch','merchant_report','reconciliation_diff')),
   subject jsonb not null, severity text not null check (severity in ('low','medium','high','critical')),
   status text not null check (status in ('open','investigating','closed')), resolution text,
+  assignee uuid,                          -- step 2.1: operator working the case (console assign)
   created_at timestamptz not null default now(), closed_at timestamptz, version integer not null default 0);
 create table case_events (id uuid primary key, case_id uuid not null references cases(id), actor text not null,
   action text not null, note text, created_at timestamptz not null default now());
@@ -76,9 +94,11 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
   if livemode=false: decision = (subject contains 'sanctioned', case-insensitive) ? block : allow   // sandbox magic (api-conventions §8)
   hit = blocklist(norm) or sanctions_entries(family(chain), norm) → block (reason 'sanctions' | 'blocklist')
   cached = latest screening for (type, chain, norm) with expires_at > now → return (cached=true)
-  no sanctions list imported yet (sanctions_lists empty) → degraded, exactly like "vendor unavailable" below (fail-safe)
-  vendor (Stage 2+): risk API (1 s) → map: severe/high → block, medium → review (treated as allow + case), low → allow
-  vendor unavailable: amount_usd_micros >= policy.fail_closed_threshold → 503 screening_unavailable else allow (reason 'vendor_unavailable', post_screen_required)
+  no sanctions list imported yet (sanctions_lists empty) → degraded, exactly like "provider unavailable" below (fail-safe)
+  provider (vendor-neutral interface, ADR-0020 §4): v1 has one live provider, `local` (the list + blocklist checks above; risk null);
+    a later vendor is a second provider behind the same interface (risk API → severe/high block, medium review = allow + case,
+    low allow) and needs no contract change. Screening responses name it in `provider` (`local` | `sandbox`)
+  provider unavailable: amount_usd_micros >= policy.fail_closed_threshold → 503 screening_unavailable else allow (reason 'vendor_unavailable', post_screen_required)
   persist screening (expires 24 h allow / 7 d block); degraded allows are never cached
 ```
 
@@ -88,20 +108,57 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 |---|---|---|
 | `POST /internal/screenings` | rails, identity, agentpay (`compliance.screen`) | above → `{screening_id, decision, risk, reasons, cached, post_screen_required}` |
 | `GET /internal/geo-policy` | payments (`compliance.read`) | `{blocked_countries, blocked_regions, version}` (payments caches; refreshes on `evt.compliance.policy.updated`) |
-| `POST /v1/account/kyb` | session owner (dashboard) | starts/returns KYB case → `{status, vendor_flow_url?}` (Stage 2: vendor hosted flow) |
-| `POST /webhooks/kyb/{vendor}` | anonymous route; vendor HMAC signature verified | vendor decision → case update |
+| `POST /v1/account/kyb` | session owner (dashboard) | starts/returns KYB case → `KybCase` (`vendor_flow_url` is always null: no vendor flow, ADR-0020) |
+| `GET /v1/account/kyb` (`getKyb`, step 2.1) | session owner/admin | → `KybCase` with `profile`, `editable`, `requested_info`, `submitted_at`, `decided_at` |
+| `PATCH /v1/account/kyb` (`updateKybProfile`) | session owner | partial `KybProfileUpdate` (null clears) → `KybCase`; only in `not_started`/`needs_info` (else `409 state_conflict`); creates the case if missing |
+| `POST /v1/account/kyb/submit` (`submitKyb`) | session owner, step-up | `{declaration: true}` → `pending`; every profile field but `website` required (`400 kyb_profile_incomplete`, `params.fields`); only from `not_started`/`needs_info`; emits `kyb.submitted` |
+| `GET /internal/kyb_cases/{account_id}` (`getInternalKybCase`, step 2.1) | identity (`compliance.read`) | → `{account_id, status, profile, decided_at}`; identity reads it on `kyb.approved` (legal name stays off the bus) |
+| ~~`POST /webhooks/kyb/{vendor}`~~ | — | not in v1 (no KYB vendor, ADR-0020); the route is not implemented |
 | `POST /internal/kyb_cases/{account_id}/decision` | ops (`compliance.kyb.decide`) | `{decision: approved\|rejected\|needs_info, reason}` (Stage 1 manual path). The case must exist (created by `account.created` or the owner's start) → else `404 resource_missing`, so a mistyped account id never mints a decision. Repeating the current decision is a no-op without an event; a different decision (including reversing an approval) transitions and emits `kyb.<decision>`; identity recomputes live mode from the event |
-| `GET/POST /internal/cases…`, `POST /internal/blocklist` | ops | case management, blocklist edits (audited). HTTP shapes are specified with the Stage 2 console, their first network consumer (OQ-T-02); in Stage 1 the same use cases run in-process through the ops CLI (`docker compose exec compliance-api node dist/ops.js …`, platform §3) |
+| console routes `/ops/…` | ops principals | KYB queue and decisions, cases, blocklist, screening, re-screen, suspension with two-person approval — §5.1 (step 2.1, closes OQ-T-02 for compliance). The ops CLI keeps the same use cases in-process |
+
+**KYB state machine (self-declared, ADR-0020 §3).** Status values are unchanged (`pending` means "submitted for review").
+
+| From | Command | Guard | To | Side effects |
+|---|---|---|---|---|
+| — | `account.created` consumer, `startKyb`, or the first `updateKybProfile` | — | `not_started` | — |
+| `not_started` · `needs_info` | `updateKybProfile` (owner) | — | same | profile stored (encrypted), audited |
+| `not_started` · `needs_info` | `submitKyb` (owner, step-up) | profile complete; declaration `true` | `pending` | `submitted_at`, `declared_by`; event `kyb.submitted` (identity sets `kyb_status`, notify confirms to owners) |
+| `pending` | ops `approved` | — | `approved` | event `kyb.approved` → identity copies the declared legal name and country (`getInternalKybCase`), recomputes live mode |
+| `pending` · `approved` | ops `rejected` | — | `rejected` | event `kyb.rejected` (reverses live mode) |
+| `pending` · `approved` · `rejected` | ops `needs_info` (with `requested_info` in the console) | — | `needs_info` | event `kyb.needs_info` with `requested_info`; the merchant can edit again |
+
+The console's `decideOpsKybCase` approves only from `pending`; the Stage 1 manual endpoint above keeps its rules (any decision on an existing case, repeats are no-ops), so the CLI and testbed T1 keep working. `approved` means "ops reviewed the self-declared details", not third-party verification (identity §4).
+
+### 5.1 Console routes (step 2.1, spec `OPS_ROUTES`, service `compliance`)
+
+All `ops` visibility under `/ops/…`, idempotent writes, audited with the operator id; `opsRoles` `ops`+`ops_admin` unless marked.
+
+| operationId | Method & path | Scope · notes |
+|---|---|---|
+| `listOpsKybCases` · `getOpsKybCase` | `GET /ops/kyb_cases` (default `pending`, oldest first) · `GET /ops/kyb_cases/{acct}` | `compliance.read` → `OpsKybCase` (profile, history, internal reason) |
+| `decideOpsKybCase` | `POST /ops/kyb_cases/{acct}/decision` | `compliance.kyb.decide`, step-up; `{decision, reason, requested_info?}` |
+| `listOpsCases` · `getOpsCase` | `GET /ops/cases` · `GET /ops/cases/{case}` | `compliance.read` → `ComplianceCase` (timeline on retrieve) |
+| `assignOpsCase` · `commentOpsCase` · `closeOpsCase` | `POST /ops/cases/{case}/assign` · `/comments` · `/close` | `compliance.cases.write`; assign moves `open → investigating`; close `{resolution, note}` emits `review.closed` for merchant-visible reviews |
+| `listOpsBlocklist` · `addOpsBlocklistEntry` · `removeOpsBlocklistEntry` | `GET /ops/blocklist` · `POST /ops/blocklist` (step-up) · `POST /ops/blocklist/{bl}/remove` (**ops_admin**, step-up) | `compliance.read` / `compliance.blocklist.write`; adding invalidates cached allows of the subject and queues a re-screen of matching destinations |
+| `createOpsScreening` · `createOpsRescreen` | `POST /ops/screenings` · `POST /ops/rescreens` | `compliance.screen`; uncached lookup; re-screen job (`job_`) for one account or all |
+| `getOpsMerchantSuspension` | `GET /ops/merchants/{acct}/suspension` | `compliance.read` → `MerchantSuspension` with `pending_request` |
+| `createOpsSuspensionRequest` | `POST /ops/merchants/{acct}/suspension_requests` | `compliance.accounts.write`, step-up; `{action: suspend\|reinstate, reason}` → pending `OpsApproval` (24 h); emits `account.action_requested` |
+| `approveOpsSuspensionRequest` · `rejectOpsSuspensionRequest` | `POST …/suspension_requests/{opa}/approve` · `/reject` | **ops_admin**; approve needs step-up and executes: `account_flags` + `account.suspended`/`reinstated` in the same transaction |
+
+**Two-person rule (server-side, never trusted from the client):** the approver's operator id (`sub` of the verified ops token) must differ from `requested_by`, and the approver must hold `ops_admin` (`403 approver_conflict`); both need a fresh step-up; one pending request per account; an action that no longer matches the account state at approval expires the request (`409 state_conflict`). The `ops_approvals` check constraint repeats the different-approver rule. The ops CLI's `account-suspend`/`account-reinstate` remain for local and test stacks; when `NP_ENV=server` they refuse with `two_person_required`.
 
 ## 6. Events
 
 | Produced | Consumers |
 |---|---|
-| `evt.compliance.kyb.approved` · `.rejected` · `.needs_info` | identity, notify |
+| `evt.compliance.kyb.approved` · `.rejected` · `.needs_info` (step 2.1: `requested_info` for `needs_info`) | identity, notify |
 | `evt.compliance.destination.blocked` | identity, notify |
 | `evt.compliance.account.suspended` · `.reinstated` | identity, notify |
-| `evt.compliance.review.opened` · `.closed` | payments (flag), webhooks (`review.opened/closed`), notify |
+| `evt.compliance.review.opened` · `.closed` | payments (flag), webhooks (`review.opened/closed`, consumed from step 2.1), notify |
 | `evt.compliance.policy.updated` | payments |
+| `evt.compliance.kyb.submitted` (step 2.1) | identity (`kyb_status: pending`), notify (`kyb.submitted` to owners) |
+| `evt.compliance.account.action_requested` (step 2.1, `OpsApproval`) | notify (security contacts: a second operator is needed) |
 
 | Consumed | Handler |
 |---|---|
@@ -124,11 +181,11 @@ One open case per kind and subject; destination blocks open `screening_hit` case
 
 ## 8. Configuration
 
-`NP_SANCTIONS_SOURCE_URL` (default `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML`, SP-15; `file:` for air-gapped machines), `NP_SANCTIONS_REFRESH` (default `true`; offline stacks set `false` and import with the ops CLI), `NP_SANCTIONS_TIMEOUT_MS` (300000), `NP_OPS_ACTOR` (default actor recorded by the ops CLI; `--actor` overrides, else `cli@<hostname>`), `NP_SCREENING_VENDOR` (`none` Stage 1 · `chainalysis` Stage 2), `NP_SCREENING_VENDOR_KEY_FILE`, `NP_KYB_VENDOR` (`manual` Stage 1 · `sumsub` Stage 2), `NP_KYB_VENDOR_SECRET_FILE`, `NP_KYB_WEBHOOK_SECRET_FILE`.
+`NP_SANCTIONS_SOURCE_URL` (default `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML`, SP-15; `file:` for air-gapped machines), `NP_SANCTIONS_REFRESH` (default `true`; offline stacks set `false` and import with the ops CLI), `NP_SANCTIONS_TIMEOUT_MS` (300000), `NP_OPS_ACTOR` (default actor recorded by the ops CLI; `--actor` overrides, else `cli@<hostname>`), `NP_SCREENING_PROVIDER` (`local`, the only v1 value; ADR-0020 §4 — replaces `NP_SCREENING_VENDOR`; no vendor key file), `NP_OPS_APPROVAL_TTL_SECONDS` (86400). No KYB vendor settings in v1 (`NP_KYB_VENDOR*`, `NP_KYB_WEBHOOK_SECRET_FILE` removed).
 
 ## 9. Security and privacy
 
-Case notes and KYB metadata are PII → envelope-encrypted; ops access via console only (audited); vendor documents never stored by NearPay (vendor-hosted). Retention per `policies.retention_years`.
+Case notes and the KYB profile (a sole proprietor's legal name and the representative are personal data) are envelope-encrypted; they never travel in events; ops access via console only (audited). No identity documents are collected at all (self-declared KYB, ADR-0020). Retention per `policies.retention_years`.
 
 ## 10. Observability
 
@@ -143,7 +200,7 @@ Normalisation per chain family; OFAC XML parser on a fixture; fail-closed thresh
 | Stage | Scope |
 |---|---|
 | 1 | local OFAC list + blocklist screening, geo policy (country only locally — no geo headers on localhost), manual KYB decision endpoint (ops script), post-screen consumer (Stage 1 has no Explorer `senders`, so post-screening re-checks `refund_to`/payer accounts only), cases (ops CLI), daily destination re-screen |
-| 2 | vendor screening + KYB vendor (hosted flow, webhooks), console case management |
+| 2 | self-declared KYB profile + submit, ops KYB decisions in the console (no KYB vendor, ADR-0020); screening stays `local` behind the provider interface; console case management, blocklist, screening/re-screen, two-person suspension (§5.1) |
 
 ## 13. Ops CLI (Stage 1)
 
