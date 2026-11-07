@@ -1,6 +1,6 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.6 (step 2.2 implementation: data §3 — migration `0002`, `ops_approvals` checks, `ops_actions`, `cases.payment_intent`, `blocklist` chain; screening provider port §4; `startKyb` no longer moves to `pending`, console approval needs a complete declaration §5; principal-scoped idempotency and operator guard §5.1; jobs §7; config §8) · Version 1.5 (step 2.1 integration, spec 0.2.0: `createInternalCase` for payments' `reconciliation_diff` cases §5, operator-action events for the unified audit trail §5.1/§6, KYB field semantics §5) · Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.7 (stage 2 audit fixes: single-person suspension only on `NP_ENV` local/test §5.1; an unknown amount fails closed when the provider is unavailable §4; blocklist soft delete — migration `0003`, `ops_actions.details` §3/§5.1; two-person blocklist removal proposed §5.1) · Version 1.6 (step 2.2 implementation: data §3 — migration `0002`, `ops_approvals` checks, `ops_actions`, `cases.payment_intent`, `blocklist` chain; screening provider port §4; `startKyb` no longer moves to `pending`, console approval needs a complete declaration §5; principal-scoped idempotency and operator guard §5.1; jobs §7; config §8) · Version 1.5 (step 2.1 integration, spec 0.2.0: `createInternalCase` for payments' `reconciliation_diff` cases §5, operator-action events for the unified audit trail §5.1/§6, KYB field semantics §5) · Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -37,6 +37,12 @@ create table sanctions_lists (source text primary key, fetched_at timestamptz no
 create table blocklist (subject_type text not null, subject text not null, reason text not null, created_by text not null,
   created_at timestamptz not null default now(), primary key (subject_type, subject),
   id uuid not null unique default gen_random_uuid(), chain text);   -- step 2.1: API id bl_…, optional chain (console routes)
+-- stage 2 audit (migration 0003, finding 10): removal is a soft delete so the trail keeps the subject (INV-9).
+alter table blocklist add removed_at timestamptz, add removed_by text, add removal_note text,
+  check ((removed_at is null) = (removed_by is null));
+-- primary key moves to id; (subject_type, subject) is unique among active rows only (a removed subject can be
+-- listed again as a new bl_); a trigger refuses DELETE and any change to a removed row. Screening, the console
+-- list and the CLI read/modify active rows (removed_at is null) only.
 
 create table screenings (
   id uuid primary key, subject_type text not null check (subject_type in ('address','near_account','destination')),
@@ -74,7 +80,9 @@ create table ops_actions (                 -- step 2.2: append-only log of every
   id uuid primary key, actor_sub uuid not null, actor_role text not null,   -- published as ops_action.recorded
   action text not null, target_type text not null, target_id text not null, account_id uuid, approval_id uuid,
   note_enc bytea,                          -- reason/note, envelope-encrypted; never published
-  created_at timestamptz not null default now());
+  created_at timestamptz not null default now(),
+  details jsonb);                          -- 0003: internal structured details (blocklist add/remove: subject_type,
+                                           -- subject, chain); never published
 
 create table account_flags (account_id uuid primary key, suspended boolean not null, reason text not null, actor text not null,
   version integer not null default 1, updated_at timestamptz not null default now());   -- suspension decisions
@@ -108,7 +116,10 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
     unavailable, risk}`, the fail policy stays in the pure decision): v1 has one live provider, `local` (the list + blocklist checks above; risk null);
     a later vendor is a second provider behind the same interface (risk API → severe/high block, medium review = allow + case,
     low allow) and needs no contract change. Screening responses name it in `provider` (`local` | `sandbox`)
-  provider unavailable: amount_usd_micros >= policy.fail_closed_threshold → 503 screening_unavailable else allow (reason 'vendor_unavailable', post_screen_required)
+  provider unavailable: amount_usd_micros absent OR >= policy.fail_closed_threshold → 503 screening_unavailable
+    else allow (reason 'vendor_unavailable', post_screen_required). An unknown amount fails closed (stage 2 audit,
+    finding 9): callers without an amount — identity destinations (create and activation), agentpay x402 payers,
+    rails legs it cannot price — get 503 while the provider is degraded (for `local`: before the first list import)
   persist screening (expires 24 h allow / 7 d block); degraded allows are never cached
 ```
 
@@ -161,7 +172,9 @@ All `ops` visibility under `/ops/…`, idempotent writes, audited with the opera
 
 **Principals without an account (step 2.2).** The service bootstrap's automatic idempotency is scoped to `principal.acct`; console writes and `createInternalCase` have none, so compliance scopes their `Idempotency-Key`s to the principal (`ops:<sub>` / `service:<sub>`, a deterministic pseudo-account uuid in `idempotency_keys`, same replay/conflict rules and retention). Every console handler also re-checks the operator from the route (`ptype=ops`, `usr_` sub, `ops_role` ∈ `opsRoles`, fresh step-up on step-up routes) on top of the kit. The ops-action envelope `aggregate.id` is `aud_<action uuid>` (the outbox keys aggregates by prefixed id; `ops_action` has no prefix — same as sentinel and rails); `object.id` stays the uuid.
 
-**Two-person rule (server-side, never trusted from the client):** the approver's operator id (`sub` of the verified ops token) must differ from `requested_by`, and the approver must hold `ops_admin` (`403 approver_conflict`); both need a fresh step-up; one pending request per account; an action that no longer matches the account state at approval expires the request (`409 state_conflict`). The `ops_approvals` check constraint repeats the different-approver rule. The ops CLI's `account-suspend`/`account-reinstate` remain for local and test stacks; when `NP_ENV=server` they refuse with `two_person_required`.
+**Two-person rule (server-side, never trusted from the client):** the approver's operator id (`sub` of the verified ops token) must differ from `requested_by`, and the approver must hold `ops_admin` (`403 approver_conflict`); both need a fresh step-up; one pending request per account; an action that no longer matches the account state at approval expires the request (`409 state_conflict`). The `ops_approvals` check constraint repeats the different-approver rule. The ops CLI's `account-suspend`/`account-reinstate` remain for local and test stacks only: they run only when `NP_ENV` is exactly `local` or `test` (allow-list, stage 2 audit finding 2); any other value — `server`, an unknown stage, empty — refuses with `two_person_required`. The use case takes the environment without a default.
+
+**Blocklist removal (stage 2 audit, finding 10).** Removal (console and CLI) is a soft delete: the entry keeps subject, chain and reason and records `removed_at`, `removed_by` (`ops:<sub>` or the CLI actor) and `removal_note`; the operator action (`blocklist_entry.added` / `.removed`) stores the subject and chain in `ops_actions.details` (internal; the event stays ids-only, and its `bl_` target id now always resolves to the entry). A removed entry is `404` to a second removal. *Proposal (not implemented):* make blocklist removal two-person like suspension (an `ops_approvals` action `blocklist.remove` requested by one operator and approved by a different `ops_admin`), since un-blocking a sanctioned/fraud address is as sensitive as reinstating a merchant; needs a spec change (`OpsApproval.action` enum and the request/approve routes).
 
 **Unified console audit trail (T-12, lead decision at step 2.1 integration).** Every console write that compliance executes (KYB decision, case assign/comment/close, blocklist add/remove, screening, re-screen, suspension request/approve/reject) also publishes `evt.compliance.ops_action.recorded` (`OpsActionEvent`: action id, `actor {sub, ops_role}`, `action` such as `case.closed`, `target {type, id}`, `account_id`, `approval` (`opa_…`), `occurred_at`; ids only — no notes, emails or addresses) from the same transaction (outbox). identity consumes it into `audit_events`, so the console audit log (`listOpsAuditEvents`) is one trail; compliance's own append-only logs (case events, `ops_approvals`) stay the source for the detail pages.
 
@@ -224,4 +237,4 @@ Normalisation per chain family; OFAC XML parser on a fixture; fail-closed thresh
 
 ## 13. Ops CLI (Stage 1)
 
-No network path exists for these actions in Stage 1 (Stage 2 moves them to the console). Inside the api container (`docker compose exec compliance-api /nodejs/bin/node dist/ops.js …`): `kyb-show` · `kyb-decide <acct> <decision> --reason [--actor]` · `cases [--all]` · `case-investigate` · `case-close --resolution` · `case-note --note` · `blocklist-add` · `blocklist-remove` · `account-suspend` · `account-reinstate` · `geo-policy` · `geo-policy-set --countries [--regions]` (emits `policy.updated`) · `sanctions-status` · `sanctions-refresh` · `sanctions-import <file | ->` · `screen <type> <subject> [--chain] [--live]`. Output is JSON; errors are JSON on stderr with exit 1 (2 for usage).
+No network path exists for these actions in Stage 1 (Stage 2 moves them to the console). Inside the api container (`docker compose exec compliance-api /nodejs/bin/node dist/ops.js …`): `kyb-show` · `kyb-decide <acct> <decision> --reason [--actor]` · `cases [--all]` · `case-investigate` · `case-close --resolution` · `case-note --note` · `blocklist-add` · `blocklist-remove [--reason]` (soft delete) · `account-suspend` · `account-reinstate` · `geo-policy` · `geo-policy-set --countries [--regions]` (emits `policy.updated`) · `sanctions-status` · `sanctions-refresh` · `sanctions-import <file | ->` · `screen <type> <subject> [--chain] [--live]`. Output is JSON; errors are JSON on stderr with exit 1 (2 for usage).
