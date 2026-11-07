@@ -1,6 +1,6 @@
 # LLD — `nearpay-rails`
 
-> Version 1.3 (step 2.1 contracts, spec 0.2.0 — console executions routes, reverify and `ExecutionRefund.token` = `TokenContract` settled at integration §6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
+> Version 1.4 (step 2.2 implementation findings: refund-leg mapping and verification floor §6.1, migration `0002`, test-mode FX from config, asset-priced par, completeness and archive details §8.10–§8.11, Explorer test cursor, contract gaps; changes in §19) · Version 1.3 (step 2.1 contracts, spec 0.2.0 — console executions routes, reverify and `ExecutionRefund.token` = `TokenContract` settled at integration §6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
 
 ## 1. Scope
 
@@ -466,3 +466,43 @@ Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): obser
 - **1Click (§3):** the spec accepts the live body (nullish optionals, status-nested quote without `correlationId`); the adapter's normalisation is no longer needed.
 - **CR-15-06:** rails fills `token` (`TokenContract`) on options and assets from the registry's `contract_address` (`erc20` on EVM, `nep141` on NEAR, `native` without a contract).
 
+
+## 19. Changes in version 1.4 (step 2.2 implementation)
+
+### 19.1 Refund legs (§6 `POST /internal/refund_executions`)
+- **Row mapping.** `origin_*` is the merchant side (`origin_asset_id` = source asset, `refund_to` = merchant destination, `refund_type` = `intents` for an Intents-account source), `destination_*` the payer side (`recipient` = payer refund address, Intents accounts lower-cased, `destination_key` = `chain|address_norm|asset`), `amount_tag = 0`, `applied_fee_bps = 0`, `fee_recipient` null. The verifier, the indexer's binding match and the Tier-B rules therefore apply unchanged to the payer-side transfer (INV-2). `reference` (jsonb) and `refund` (jsonb, the immutable `ExecutionRefund` snapshot, INV-6) are new columns (migration `0002_stage2.sql`; the LLD's "migration 0003" is `0002` in this repo, kit tables have no numbered file here).
+- **Verification floor.** `EXACT_OUTPUT`: `amount_out_expected` = the converted amount (1Click must deliver it exactly — integrity). `EXACT_INPUT`: `amount_out_expected` = the quote's `minAmountOut` (the payer's guaranteed floor; `refund.amount_out_expected` shows the quote's `amountOut`). Evidence below the floor is `short` (payments decides).
+- **Integrity for `EXACT_INPUT`** (added to `checkQuote`): `amountIn` equals the requested amount, `minAmountOut` positive and ≤ `amountOut`. All Stage 1 checks still apply (echoed fields, `dry: false`, deposit address valid for the source, deadline, signature); appFees must be empty.
+- **Intents-source route legs** carry a binding (`np1:` over execution id, deposit address, source asset, `amountIn`, no fee, deadline); the DB check on `binding` now allows `route_quote` + `kind = refund` + `refund_type = intents`. `refund.transfer` = `{signer_id: merchant account, receiver_id: deposit address, token, amount: amountIn, memo: binding, deadline}`; agentpay relays it. `intents_transfer` legs: `receiver_id` = payer account, `amount` = request amount, provider `direct_intents`; `intents_requirement` stays null for refunds (payments-only shape).
+- **Screening** uses context `refund`. `screen: true` (owner override) makes an unavailable compliance fail closed at any amount; the cache cannot be bypassed yet (gap, below).
+- **Kill switch / config:** live legs need `quoting_enabled` and `NP_TREASURY_ACCOUNT` like payments (fail closed); `cross_chain_enabled` gates route legs. An idempotency key owned by the other kind is `idempotency_key_reused`.
+- **Sandbox:** quotes send `scenario_amount` (payments: pricing amount; refunds: the refund amount), `scenario_group` (`pi_…` / `re_…`) and `scenario_kind`.
+
+### 19.2 Pricing (§8.2)
+- **Test-mode FX** comes straight from `NP_TEST_FX_RATES` (no DB rows), so `rails-api` prices non-USD currencies in test mode without the feeds process; `fx_rates` holds live (ECB) rows only. An ECB answer older than the stored `as_of` never replaces it.
+- **Test-mode secondary price** = the sandbox registry price (`secondary_source = sandbox`), written by the token refresh, so non-par settlement works offline.
+- **Asset pricing at par:** an asset-priced payment whose pricing asset is a stablecoin passing the depeg guard is valued at `fx(peg)` (USD 1 for USDC), not through the dual-source rule (keeps Stage 1 behaviour for USDC-priced payments into USDT). A non-USD-peg settlement asset (EURC) priced in USD uses the dual-source rule, as specified.
+- 1Click `/v0/tokens` is read as text so `price` keeps its source digits (`parseJsonDecimals`); exact ratios in `price_num/den`, display numerics in `price_usd`.
+- `currency_unsupported` is checked before par (a currency outside `NP_PRICING_CURRENCIES` is refused even for a same-currency stablecoin).
+
+### 19.3 Reconciliation evidence (§8.10)
+- `in_flight` excludes `expired_unpaid` executions whose 24 h tracking window has closed (they never become terminal and would block `complete` forever).
+- Cursor rule implemented as: every existing tracker cursor (`near-indexer`, `evm:*`, and `explorer` when the feed runs) has `updated_at` ≥ the day's end; an absent cursor means an idle demand-driven tracker (nothing in flight on its chain). Test-mode summaries ignore cursors (the sandbox feed is not a chain tracker).
+- `totals.asset_id` is `destination_asset_id` for both kinds (the payer-side asset for refund legs).
+- `tier_b.explorer_confirmed` / `unconfirmed` are `0` / `[]` while the Explorer feed is off; `count` is always reported.
+
+### 19.4 Observation archive (§8.11)
+- Batches of ≤ 2,000 rows per (mode, UTC day); `payload_json` is the stored `jsonb` text. `payload_sha256` stays the hash of the payload **as received** (`JSON.stringify` before `jsonb` normalisation), so the read-back check compares the file's `payload_json` bytes with the database text and the stored hash with the file's hash (it does not re-hash `payload_json` against `payload_sha256`).
+- `s3://` stores sign path-style requests with SigV4 (`NP_OBS_ARCHIVE_S3_ENDPOINT`, `_REGION`, `_ACCESS_KEY_ID_FILE`, `_SECRET_ACCESS_KEY_FILE`); no SDK.
+
+### 19.5 Explorer feed (§8.5)
+- Window (a) also asks for `PENDING_DEPOSIT` (`PENDING_DEPOSIT,INCOMPLETE_DEPOSIT,PROCESSING`). Terminal executions receive `explorer_status` (Tier-B cross-check) without a nudge. Test mode keeps its own cursor `explorer:test` (not a reconciliation cursor) and idles 60 s if the sandbox build has no mirror (404). `NP_EXPLORER_ENABLED` defaults to on when the token file exists.
+
+### 19.6 Console
+- `reverify` records an `operator` observation (`{action, action_id, operator, ops_role, note}`), sets `verify_at` (scheduling only: no version bump, no execution event) and emits `evt.rails.ops_action.recorded` with action `execution.reverify_requested`, target `execution`; the envelope aggregate id is `aud_<action uuid>` (as sentinel; the outbox keys aggregates by prefixed id).
+- `listOpsExecutions` pages by id (UUIDv7 = creation order), newest first; `ending_before` supported.
+
+### 19.7 Contract gaps (change requests, not applied)
+- **CR-22-RL-01** `createScreening` body: optional `fresh: boolean` ("bypass the screening cache") so rails can honour `CreateRefundExecution.screen` exactly (today an owner override re-screens through the cache).
+- **CR-22-RL-02** `createRefundExecution.errors` lacks `fx_rate_unavailable` and `currency_unsupported`; an `EXACT_OUTPUT` leg converting through a non-USD-peg stablecoin can hit `fx_rate_unavailable`, which rails returns as is (the kit does not restrict codes to the declared list) — declare both codes for parity with `createExecution`.
+- **CR-22-RL-03** `ExecutionRefund` has no field for the binding of an `intents_transfer` leg other than `transfer.memo`; fine for agentpay, noted only.
