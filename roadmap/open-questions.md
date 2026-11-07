@@ -118,3 +118,8 @@ Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR 
 | Q-VEN-04 | Transactional email (primary/fallback) | Postmark, Amazon SES, Resend |
 | Q-VEN-05 | FX and price feeds | ECB reference + commercial FX API; secondary crypto price source (e.g. Pyth, CoinGecko) |
 | Q-VEN-06 | On-call paging + status page | external SaaS (must be outside Cloudflare and netcup) |
+
+## Mainnet findings carried into Stage 2 (2026-11-07)
+
+- **Spec transcription of live 1Click.** Live 1Click sends `null` for unset optional fields and omits the nested `quoteResponse.correlationId` on `GET /v0/status` (reference/landscape.md §2). rails and sentinel normalise bodies before validation (rails #2, sentinel #2); the sandbox cannot mirror these two quirks because the spec schemas reject them. Step 2.1: make those `OneClick*` fields nullish and add a status-only quote response with an optional `correlationId`, then let the sandbox serve the live shape.
+
