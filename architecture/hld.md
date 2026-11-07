@@ -97,6 +97,7 @@ flowchart LR
 | [0018](../decisions/ADR-0018-list-filters-not-search.md) | Typed filters on list endpoints instead of search endpoints |
 | [0019](../decisions/ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites |
 | [0020](../decisions/ADR-0020-v1-delivery-and-vendor-scope.md) | **v1 by 2026-11-14:** stages exit on green test-mode E2E, one v1 mainnet demo; self-declared KYB + ops decision (no KYB vendor); local OFAC screening behind a vendor-neutral interface; ECB FX + keyless public crypto price feed; AI-agent vault audits (mainnet deploy human-signed); merges, incl. money paths, delegated to the lead agent |
+| [0021](../decisions/ADR-0021-shared-ui-package.md) | `@nearpay-internal/ui` (design system) is a versioned nearpay-kit package consumed by checkout, dashboard, console and site; CSS custom properties + plain CSS classes + thin React components, no runtime CSS-in-JS, CSP-safe, self-hosted DM Sans |
 
 ## 5. Container view
 
