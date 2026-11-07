@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.7 (step 2.2 implementation decisions §18: refund budgets and duplicate accounting §5, `sign_intent` nonces, reconciliation day of a statement line, ops-action envelope id, FX pricing, link success page) · Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` 0.2.0: data §4, refund rules §5, API §6 (console reconciliation on `/ops/…` §6.4), events §7, refund algorithm §8.4 (kill switch), jobs §9 (`reconciliation_diff` cases), decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.8 (Stage 2 audit fixes §19: payer client IP and link rate limits in Valkey, `max_uses` reservations, `submitting` relay state, late execution states, execution/leg consistency check, kill switch fails closed when unknown, Turnstile test secrets on local/test only) · Version 1.7 (step 2.2 implementation decisions §18: refund budgets and duplicate accounting §5, `sign_intent` nonces, reconciliation day of a statement line, ops-action envelope id, FX pricing, link success page) · Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` 0.2.0: data §4, refund rules §5, API §6 (console reconciliation on `/ops/…` §6.4), events §7, refund algorithm §8.4 (kill switch), jobs §9 (`reconciliation_diff` cases), decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -256,7 +256,7 @@ All `POST` honour `Idempotency-Key` (foundations §7).
 | `GET …/public/stream` | SSE (`text/event-stream`, client secret in header — the SPA uses a fetch-based SSE client because `EventSource` cannot send headers): `event: session` / `attempt` / `intent` snapshots (`session` is the public session above, incl. `payment_intent`); heartbeat 15 s; `retry: 3000` | |
 | `POST …/attempts/{pa}/simulate_deposit` | **test mode only** → sandbox `POST /sim/deposits` → `202` | `livemode_forbidden` |
 | `POST /v1/test_helpers/payment_attempts/{pa}/advance` (secret test key) | `{to: deposit\|processing\|success\|refund\|fail}` → sandbox `POST /sim/advance` → `202` | `livemode_forbidden` |
-| `GET /v1/payment_links/{id}/public` · `POST …/public/sessions` (anonymous, no client secret) | → `PublicPaymentLink` (`active`, pricing, `display`, `settlement` asset/chain/type, `collect_email`) / `{customer_email?, locale?}` → `PaymentLinkSession` `{checkout_session, client_secret, url, expires_at}`; per-IP and per-link rate limits; the session is `source: payment_link` with the link's metadata | `link_inactive` (inactive or `uses ≥ max_uses`), `account_not_live`, `destination_not_active`, `currency_unsupported` |
+| `GET /v1/payment_links/{id}/public` · `POST …/public/sessions` (anonymous, no client secret) | → `PublicPaymentLink` (`active`, pricing, `display`, `settlement` asset/chain/type, `collect_email`) / `{customer_email?, locale?}` → `PaymentLinkSession` `{checkout_session, client_secret, url, expires_at}`; session creation rate-limited per client network, per link and client network, and per link (§19.1), `max_uses` reserved atomically (§19.2); the session is `source: payment_link` with the link's metadata | `link_inactive` (inactive or `uses ≥ max_uses`), `account_not_live`, `destination_not_active`, `currency_unsupported` |
 
 The payer API never returns the merchant's raw destination address; it returns the asset/chain only. The co-signed merchant name and destination fingerprint come from sentinel (ADR-0010).
 
@@ -378,7 +378,10 @@ tx: leg awaiting_signature(next_action, deadline, execution_id, execution_versio
 submit_tx {tx_hash}       → rails POST /internal/executions/{ex}/deposit_tx (refund stays requires_action until detection)
 submit_tx {signed_intent} → equal to the issued payload (signer, nonce, message) else 422 signed_intent_mismatch;
                             live + kill switch engaged → 503 rail_unavailable (agentpay refuses the relay too, agentpay §8);
-                            agentpay POST /internal/relay {execution_id, binding, signed, kind:'refund', refund}; leg submitted
+                            tx: leg awaiting_signature → submitting (row lock; cancel/prepare/recipient refused while submitting, §19.4)
+                            agentpay POST /internal/relay {execution_id, binding, signed, kind:'refund', refund};
+                            accepted → leg submitted (refund pending); refused (intent_invalid, insufficient_balance,
+                            signed_intent_mismatch) → leg awaiting_signature; unknown outcome → leg stays submitting
 execution events (version-checked, like §8.3; matched by refund_legs.execution_id):
   deposit_detected/settling/verifying → leg processing, refund pending
   succeeded (payer-side evidence)     → leg succeeded; refund succeeded (amount_received, evidence); counters; statement 'refund' line
@@ -417,7 +420,7 @@ execution events (version-checked, like §8.3; matched by refund_legs.execution_
 
 ## 11. Configuration
 
-`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_TICKET_SIGNING_KEY_FILE` (Ed25519; public key configured in sentinel), `NP_SANDBOX_BASE_URL`, `NP_COMPLIANCE_URL`, `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE` (unset → Turnstile disabled), `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PRICING_CURRENCIES` (Stage 1: `usd`; `currency: asset` is always accepted), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`, `NP_IDENTITY_URL`, `NP_VALKEY_URL` (SSE fan-out `cs:<uuid>`; in-process without it).
+`NP_PAY_ORIGIN` (`https://pay.nearpay.localhost`), `NP_TICKET_SIGNING_KEY_FILE` (Ed25519; public key configured in sentinel), `NP_SANDBOX_BASE_URL`, `NP_COMPLIANCE_URL`, `NP_MAX_LIVE_ATTEMPTS` (5), `NP_SESSION_TTL_DEFAULT` (3600), `NP_TURNSTILE_SECRET_FILE` (unset → Turnstile disabled), `NP_UNDERPAY_TOLERANCE_MAX_BPS` (100), `NP_PRICING_CURRENCIES` (Stage 1: `usd`; `currency: asset` is always accepted), `NP_PII_KEK_FILE`, `NP_RAILS_URL`, `NP_AGENTPAY_URL`, `NP_IDENTITY_URL`, `NP_VALKEY_URL` (SSE fan-out `cs:<uuid>` and payment-link rate-limit counters; in-process without it), `NP_LINK_SESSIONS_PER_IP` (10), `NP_LINK_SESSIONS_PER_LINK_CLIENT` (5), `NP_LINK_SESSIONS_PER_LINK` (600) (§19.1).
 
 ## 12. Security
 
@@ -501,8 +504,8 @@ Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.
    `RefundTransfer.deadline`. Wallets must sign the exact strings (`nep413.message` / `payload`); `next_action.message`
    is display-only (stored as jsonb, key order not preserved). `submit_tx` verifies the signature locally
    (`intent_invalid`) and byte-compares with the issued payload (`signed_intent_mismatch`) before relaying.
-4. **Relay.** agentpay `POST /internal/relay` timeout 8 s with one idempotent retry; the relay happens before the leg is
-   marked `submitted`, outside any row lock; `getInternalRefund` is a plain read.
+4. **Relay.** agentpay `POST /internal/relay` timeout 8 s with one idempotent retry; the relay happens outside any row
+   lock, after the leg was marked `submitting` under it (§19.4); `getInternalRefund` is a plain read.
 5. **Kill switch.** Checked before any refund row is written (create/prepare/recipient/relay → `503 rail_unavailable`,
    live only). The recovery job skips live legs while engaged (they fail with `rail_timeout` after 2 min, releasing the
    reservation). A review `reject` while engaged records the decision without a draft refund.
@@ -520,8 +523,53 @@ Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.
    `GET /internal/fx-rates` (absent → `currency_unsupported`; unavailable/stale or rails down → `fx_rate_unavailable`) and
    are valued with `GET /internal/settlement-estimate` for minimums, the unverified cap (fails closed) and payment options.
 9. **Payment links.** A link without `success_url` sends payers to `<pay origin>/l/<plink>/complete`; `customer_email`
-   is kept only when the link collects it; rate limits are per replica (the gateway adds its own).
+   is kept only when the link collects it; rate limits are shared through Valkey (superseded by §19.1).
 10. **Customers.** Email lookup hash key = HMAC(KEK, "nearpay:payments:customer-email:v1"); DELETE also clears
     description, wallets and metadata; a deleted customer reads as 404. Receipt email = the session's, else the
     customer's (unless deleted), for payment and refund receipts.
 11. **Execution reference.** Payment executions now send `reference {payment_intent, payment_attempt}` (§17 item 14).
+
+## 19. Stage 2 audit fixes (nearpay-payments `fix/stage-2-audit`, migration `0003_audit_fixes.sql`)
+
+1. **Payer client IP and anonymous link limits (audit 3).** The payer IP follows identity's rule (L-ID-07):
+   `CF-Connecting-IP` on `NP_ENV=server`, the first `X-Forwarded-For` hop elsewhere, `unknown` when absent or malformed
+   (used for link limits, Turnstile `remoteip` and the outage limit). `POST /v1/payment_links/{id}/public/sessions` first
+   loads the link and checks it accepts payers (unknown ids → 404, inactive → `link_inactive`, nothing counted); the
+   session opens in the link's own account and mode (anonymous principals carry no mode). Then three limits per minute,
+   all-or-nothing (a refused request counts nowhere): per client network (`/24` IPv4 incl. IPv4-mapped, `/64` IPv6;
+   `NP_LINK_SESSIONS_PER_IP`, 10), per link + client network (`NP_LINK_SESSIONS_PER_LINK_CLIENT`, 5) — one client can no
+   longer 429 a link for everyone — and a generous per-link ceiling (`NP_LINK_SESSIONS_PER_LINK`, 600) that throttles
+   session creation only (`GET …/public` is never limited by it). Windows are sliding, estimated from two fixed windows
+   (O(1) state per key); counters live in Valkey (`np:payments:rl:*`, one Lua script per request: check all, then INCR +
+   PEXPIRE 2 W; single-node Valkey per ADR-0015 — a cluster would need hash tags) with an in-process LRU fallback (50k
+   keys) when Valkey is unset, down or errors.
+2. **`max_uses` under concurrency (audit 12).** Opening a session from a link locks the link row (`FOR UPDATE`, inside the
+   session transaction) and requires `uses + reserved < max_uses`, where `reserved` = the link's intents in
+   `requires_payment | processing | requires_review` (index `pi_payment_link_open`). A reservation ends with its intent:
+   succeeded → a use (`uses += 1` in the same transaction), canceled/expired → released; nothing is given back
+   explicitly. A full link answers `link_inactive` ("held by a checkout in progress"). Trade-off: abandoned sessions hold
+   a use until they expire (`session_expires_in`).
+3. **Kill switch fails closed (audit 8).** No stored sentinel state (fresh database, or the last event aged out of the
+   7-day stream before the durable consumer existed) = `unknown` = engaged for live refunds (`503 rail_unavailable`,
+   reason `kill_switch_unknown`); the worker logs it at boot. Sentinel 0.2.0 has no service-readable state route
+   (`getOpsKillSwitch` is ops-only), so the state becomes known with the next `evt.sentinel.kill_switch.*`; change
+   request: `GET /internal/kill-switch` (`KillSwitchState`, service auth for payments/rails), read at boot.
+4. **`submitting` relay state (audit 5).** A `sign_intent` leg moves `awaiting_signature → submitting` under the row lock
+   before agentpay is called (transition row; no refund event). `submitting` counts as money moving: cancel, prepare
+   and recipient changes refuse. Accepted → `submitted` (refund `pending`); refused before publishing (`intent_invalid`,
+   `insufficient_balance`, `signed_intent_mismatch`) → back to `awaiting_signature`; unknown outcome (timeout, 5xx) →
+   stays `submitting` (the payload may be on chain) — the merchant may submit the same payload again (its nonce makes a
+   second relay harmless), rails' execution events move it on, or the deadline expires it. Shown as `submitted` in the
+   API (the public enum has no `submitting`).
+5. **Late execution states (audit 6).** A leg that is over (`failed` — preparation failed, canceled, superseded —
+   `succeeded`, `returned`) follows only states where money moved (`processing`, `succeeded`, `returned`, `held`); a
+   pre-deposit state (`quoting`, `awaiting_deposit`) never takes back a leg past `awaiting_signature`. Ignored states
+   still link the execution to the leg (later money is found, INV-3) and write a `failed → failed` transition note;
+   rails has no route to abandon an execution (change request), so nothing is shown to the merchant.
+6. **Execution/leg consistency (audit 7).** Before a next action is issued: `EXACT_INPUT` (and `intents_transfer`) →
+   `deposit.amount_in` / `transfer.amount` = leg amount; a transfer must be signed by the destination and move the
+   settlement asset; an `intents_transfer` leg must pay the refund recipient. A mismatch fails the leg
+   (`execution_mismatch`, execution still linked), releases the reservation (refund `failed`), alerts
+   (`ALERT refund execution mismatch`) and answers `503 rail_unavailable`; the instructions are never shown.
+7. **Turnstile test secrets (audit 2).** Answered locally only on `NP_ENV ∈ {local, test}` (allow-list); every other
+   stage asks siteverify.
