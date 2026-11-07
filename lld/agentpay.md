@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; kill switch blocks live refund relays §8; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.5 (step 2.2 implementation: refund relay checks the signed payload against payments' issued `next_action` **and** rails' `refund.transfer` (`signed_intent_mismatch`, CR-22-AP-01) §5; `agent_payments.refund_id`, nullable `fee_to` (migration 0003) §4; payer-route fallback rule §5; `sendSignedTx` rejection rule §7; binding-index replays §7) · Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; kill switch blocks live refund relays §8; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -54,7 +54,9 @@ create index cr_session on checkout_requirements (checkout_session_id);
 create table agent_payments (
   id uuid primary key, account_id uuid not null, livemode boolean not null,
   kind text not null check (kind in ('x402','checkout','refund')),
-  binding text not null, payer text not null, payload_hash bytea not null unique, payload jsonb not null,
+  refund_id uuid,                          -- migration 0003: payments refund (re_) of a refund leg
+  binding text not null, payer text not null,       -- refund kind: payer = merchant signer, pay_to = receiver,
+                                                    -- fee_to null (0003 drops not null), fee_amount 0 payload_hash bytea not null unique, payload jsonb not null,
   intent_hashes text[], nonces text[],
   status text not null check (status in ('verified','queued','submitted','settled','failed')),
   amount numeric(78,0) not null, asset_id text not null, fee_amount numeric(78,0) not null,
@@ -105,6 +107,10 @@ Purges: unconsumed x402 requirements expired more than 24 h; checkout requiremen
 
 **Client secret on the checkout routes:** agentpay cannot check payments' client secrets. It calls payments' public `GET /v1/checkout/sessions/{id}/public` with the caller's `X-NearPay-Client-Secret` (no service token); that read also gives the session status and the `PayerAttempt` returned by `agent_pay`. This is the Stage 1 path. **Stage 2 (spec 0.2.0, CR-15-15):** agentpay calls payments `GET /internal/checkout_sessions/{id}/payer` with its service token (`payments.read`) and forwards the caller's `X-NearPay-Client-Secret`; the answer `PayerSessionContext {account_id, livemode, session: PublicCheckoutSession}` also gives account and mode without trusting the public route; a wrong secret is `client_secret_invalid` as before. Keep the public-route fallback only until payments ships the route.
 
+**`/internal/relay` `kind: refund` validation (Stage 2, step 2.2).** In order: replay by payload hash (same execution and kind → the existing `ap_`; else `intent_invalid`) → rails execution: `kind = refund`, `refund.transfer` set, `transfer.memo = binding`, `reference.refund` set and equal to the body's `refund` (if given), `state = awaiting_deposit` → live + kill switch → `503 rail_unavailable` → signature → payments `GET /internal/refunds/{id}` (`payments.read`, 1 s): same mode, `status = requires_action`, `next_action.type = sign_intent` → the issued payload must agree with rails (signer, receiver, token, amount, memo, `verifying_contract`, one transfer, NEP-413 nonce = message nonce, issued deadline ≤ `transfer.deadline`; otherwise `intent_invalid` "prepare it again" and an error log — payments and rails disagree) → the signed payload must be **exactly** the issued one: standard ∈ `standards`; signer, contract, nonce, deadline and the one transfer field by field; for NEP-413 the envelope's recipient, nonce, no `callbackUrl` and `message` byte-equal to `nep413.message`; for ERC-191 / raw ed25519 `payload` byte-equal to the issued `payload` → else **`422 signed_intent_mismatch`** (not declared on `relaySignedIntent` in 0.2.0: CR-22-AP-01) → deadline > now + 5 s (`intent_invalid`) → `simulate_intents` in the leg's mode (`insufficient_balance` / `intent_invalid`) → insert `agent_payments(kind refund, queued)` + transition (actor `payments`) in one transaction. No events, no screening (rails screens the recipient when preparing the leg). **payments must call the relay while the leg still shows its `next_action`** (before marking it `submitted`, as payments §8 orders it) and its `getInternalRefund` read must not block on the row lock it holds; the relay's peer reads (rails 1 s, payments 1 s, simulate 3 s) fit payments' 5 s timeout and payments retries a timeout (idempotent). A `refund` field without `kind: refund` is `400 invalid_request`; a checkout relay refuses an execution whose `kind` is not `payment`.
+
+**Payer session fallback (step 2.2).** agentpay calls `getPayerCheckoutSession`; only an answer of `404 resource_missing` (payments without the route: unrecognised URL) falls back to the public route. A `401`/`client_secret_invalid` is `client_secret_invalid`; anything else is `503 rail_unavailable`. With the internal answer, the agent attempt's and the stored requirement's account and mode must equal the session's.
+
 **`/internal/relay` validation** uses rails `GET /internal/executions/{id}`: `method = intents_transfer`, `intents_requirement.binding` equal, `state = awaiting_deposit`; then the same exact-two-transfers check, signature check and `simulate_intents` as verify. Account and mode come from the execution. Checkout relays are not screened again (rails screened at execution creation).
 
 ## 6. Verify algorithm
@@ -141,6 +147,8 @@ replayed (spec 0.1.5): the first response that carries the final outcome (settle
         calls cannot both win); every later response repeats the outcome with replayed: true, so the merchant delivers the
         resource at most once per settlement. settlement_pending is not a result: it never says replayed and never claims,
         so "pending, then call again" still delivers once
+replays: a concurrent submission of the same payload may hit ap_binding_live before the payload_hash arbiter; the relay then
+        re-reads by payload hash and answers the winner (same execution and kind), so identical submissions never get intent_invalid
 statuses: payloads are inserted `queued` (verify and queue in one step; `verified` is unused); a claimed payload moves
         `queued → submitted` when its batch is built (before simulation and sending); `submitted → queued` on abandon/split
         final → {success:true, transaction}; not final → {success:false, errorReason:'settlement_pending', transaction?: tx if submitted}
@@ -153,8 +161,10 @@ batcher (leader, tick 150 ms):
   sim = simulate_intents({signed: batch}) → failure → re-simulate each, mark failing ones failed(reason), rebuild batch
   tx = FunctionCall(intents.near, 'execute_intents', {signed: batch}, gas = n × GAS_PER_PAYLOAD + 20 Tgas, deposit 0)
        signed by key (function-call access key, receiver intents.near, method execute_intents)
-  live: sign with kit buildExecuteTx, store the tx hash, then send_tx(wait_until = FINAL) (10 s) over agentpay's own JSON-RPC
-       call (kit executeIntents hides the hash on timeout); a key carries one tx at a time (in_flight), next nonce = last_nonce + 1
+  live: sign with kit buildExecuteTx, store the tx hash, then kit sendSignedTx({bytes, txHash}, wait FINAL, 10 s) (Stage 2,
+       CR-15-16); rejected (requeue, forget the nonce) only when every RPC provider refused it as an invalid transaction;
+       a timeout, transport error or any other answer keeps it 'submitted' and polls; tx status stays agentpay's own
+       EXPERIMENTAL_tx_status call (unknown → not final). A key carries one tx at a time (in_flight), next nonce = last_nonce + 1
   outcome:
      success → for each payload: match intents_executed (account_id, nonce) → settled(tx_hash, block); emit events; publish 'ap:<id>'
      failure → mark batch 'split' → requeue payloads individually (size-1 batches, `solo`) → failing → failed(reason)
@@ -200,14 +210,14 @@ NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s; tried in order), compl
 
 ## 14. Tests
 
-Signature vectors (NEP-413 named + implicit, ERC-191, raw ed25519); every invalidReason; batch split on one bad payload; idempotent settle; settlement_pending path; sandbox E2E with `@nearpay/x402` middleware + agent client.
+Stage 2: property tests — every single-field mutation of an issued refund payload, validly re-signed, is `signed_intent_mismatch`; any interleaving of replays / concurrent / non-issued submissions gives one agent payment and one relay per leg (Testcontainers). Signature vectors (NEP-413 named + implicit, ERC-191, raw ed25519); every invalidReason; batch split on one bad payload; idempotent settle; settlement_pending path; sandbox E2E with `@nearpay/x402` middleware + agent client.
 
 ## 15. Stage mapping
 
 | Stage | Scope |
 |---|---|
 | 1 | x402 `intents-transfer` (supported/requirements/verify/settle), batcher, relayer pool, checkout `agent_pay`, `/internal/relay` for checkout `intents_transfer` |
-| 2 | relay for Intents-account refunds; agent payments in dashboard; payer session via payments `getPayerCheckoutSession` (CR-15-15); relayer sends with kit `sendSignedTx` (CR-15-16) instead of its own JSON-RPC call |
+| 2 | relay for Intents-account refunds; agent payments in dashboard; payer session via payments `getPayerCheckoutSession` (CR-15-15); relayer sends with kit `sendSignedTx` (CR-15-16) instead of its own JSON-RPC call — implemented in step 2.2 (the dashboard uses the Stage 1 `GET /v1/agent_payments` routes with `kind=refund`; CR-22-AP-02 asks for `refund` on `AgentPayment`) |
 | 3 | `near-intents` cross-chain method; MPP adapter evaluation |
 
 ## 16. Ops CLI (Stage 1)
