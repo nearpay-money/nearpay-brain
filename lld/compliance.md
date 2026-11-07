@@ -1,6 +1,6 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.5 (step 2.1 integration, spec 0.2.0: `createInternalCase` for payments' `reconciliation_diff` cases §5, operator-action events for the unified audit trail §5.1/§6, KYB field semantics §5) · Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -115,6 +115,7 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 | `GET /internal/kyb_cases/{account_id}` (`getInternalKybCase`, step 2.1) | identity (`compliance.read`) | → `{account_id, status, profile, decided_at}`; identity reads it on `kyb.approved` (legal name stays off the bus) |
 | ~~`POST /webhooks/kyb/{vendor}`~~ | — | not in v1 (no KYB vendor, ADR-0020); the route is not implemented |
 | `POST /internal/kyb_cases/{account_id}/decision` | ops (`compliance.kyb.decide`) | `{decision: approved\|rejected\|needs_info, reason}` (Stage 1 manual path). The case must exist (created by `account.created` or the owner's start) → else `404 resource_missing`, so a mistyped account id never mints a decision. Repeating the current decision is a no-op without an event; a different decision (including reversing an approval) transitions and emits `kyb.<decision>`; identity recomputes live mode from the event |
+| `POST /internal/cases` (`createInternalCase`, step 2.1 integration) | payments (`compliance.cases.write`) | `{kind: reconciliation_diff, account_id, livemode, subject: {type: reconciliation_run, id: rcn_…}, severity?, note}` → `201 ComplianceCase`; idempotent on `Idempotency-Key: rcn:<run id>`; default severity `high`; never a merchant review (`review: false`, no `review.opened`); one open case per kind and subject applies. The operator closes the case (`closeOpsCase`) after resolving the run on payments' console routes (payments §6.4) |
 | console routes `/ops/…` | ops principals | KYB queue and decisions, cases, blocklist, screening, re-screen, suspension with two-person approval — §5.1 (step 2.1, closes OQ-T-02 for compliance). The ops CLI keeps the same use cases in-process |
 
 **KYB state machine (self-declared, ADR-0020 §3).** Status values are unchanged (`pending` means "submitted for review").
@@ -129,6 +130,8 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 | `pending` · `approved` · `rejected` | ops `needs_info` (with `requested_info` in the console) | — | `needs_info` | event `kyb.needs_info` with `requested_info`; the merchant can edit again |
 
 The console's `decideOpsKybCase` approves only from `pending`; the Stage 1 manual endpoint above keeps its rules (any decision on an existing case, repeats are no-ops), so the CLI and testbed T1 keep working. `approved` means "ops reviewed the self-declared details", not third-party verification (identity §4).
+
+**KYB field semantics (lead decision at step 2.1 integration, ADR-0020 decision 3).** The public field names `kyb_verified` (sentinel attestation, identity settlement context) and `verified_legal_name` (identity) stay as they are — renaming them would not be additive. Their meaning is: the legal name an owner self-declared and NearPay ops approved. No client may present them as identity verification; the UI copy is "Business details reviewed by NearPay" and never "verified identity" (checkout, dashboard, console, docs).
 
 ### 5.1 Console routes (step 2.1, spec `OPS_ROUTES`, service `compliance`)
 
@@ -148,6 +151,8 @@ All `ops` visibility under `/ops/…`, idempotent writes, audited with the opera
 
 **Two-person rule (server-side, never trusted from the client):** the approver's operator id (`sub` of the verified ops token) must differ from `requested_by`, and the approver must hold `ops_admin` (`403 approver_conflict`); both need a fresh step-up; one pending request per account; an action that no longer matches the account state at approval expires the request (`409 state_conflict`). The `ops_approvals` check constraint repeats the different-approver rule. The ops CLI's `account-suspend`/`account-reinstate` remain for local and test stacks; when `NP_ENV=server` they refuse with `two_person_required`.
 
+**Unified console audit trail (T-12, lead decision at step 2.1 integration).** Every console write that compliance executes (KYB decision, case assign/comment/close, blocklist add/remove, screening, re-screen, suspension request/approve/reject) also publishes `evt.compliance.ops_action.recorded` (`OpsActionEvent`: action id, `actor {sub, ops_role}`, `action` such as `case.closed`, `target {type, id}`, `account_id`, `approval` (`opa_…`), `occurred_at`; ids only — no notes, emails or addresses) from the same transaction (outbox). identity consumes it into `audit_events`, so the console audit log (`listOpsAuditEvents`) is one trail; compliance's own append-only logs (case events, `ops_approvals`) stay the source for the detail pages.
+
 ## 6. Events
 
 | Produced | Consumers |
@@ -159,6 +164,7 @@ All `ops` visibility under `/ops/…`, idempotent writes, audited with the opera
 | `evt.compliance.policy.updated` | payments |
 | `evt.compliance.kyb.submitted` (step 2.1) | identity (`kyb_status: pending`), notify (`kyb.submitted` to owners) |
 | `evt.compliance.account.action_requested` (step 2.1, `OpsApproval`) | notify (security contacts: a second operator is needed) |
+| `evt.compliance.ops_action.recorded` (step 2.1 integration, `OpsActionEvent`) | identity (`audit_events`: one console audit trail, §5.1) |
 
 | Consumed | Handler |
 |---|---|

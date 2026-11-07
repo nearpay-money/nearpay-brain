@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.5 (step 2.1 contracts: secret rotation and resend §5, `account.updated` and `review.*` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -65,14 +65,14 @@ Retention: events, deliveries and attempts 30 days (daily purge).
 |---|---|---|
 | `evt.payments.checkout_session.completed` / `.expired` | `checkout.session.completed` / `.expired` | checkout_session |
 | `evt.payments.payment_intent.{created,processing,succeeded,payment_failed,requires_review,overpaid,canceled}` | `payment_intent.<same>` | payment_intent |
-| `evt.payments.refund.{created,requires_action,succeeded,failed,canceled}` | `refund.<same>` | refund |
+| `evt.payments.refund.{created,requires_action,pending,succeeded,failed,canceled}` | `refund.<same>` (`pending`: merchant deposit detected for the current leg, step 2.1) | refund |
 | `evt.billing.invoice.{created,finalized,paid,payment_failed,overdue,voided,marked_uncollectible}` | `invoice.<same>` | invoice |
 | `evt.billing.subscription.{created,updated,deleted,renewal_upcoming}` | `customer.subscription.<same>` | subscription |
 | `evt.billing.mandate.{activated,collected,insufficient_funds,canceled,exhausted}` | `mandate.<same>` | mandate |
 | `evt.agentpay.agent_payment.{settled,failed}` | `agent_payment.<same>` | agent_payment |
 | `evt.identity.account.updated` | `account.updated` (step 2.1: the catalogue routes it to webhooks) | account (public `Account`) |
 | `evt.identity.settlement_destination.{cooling_off,activated,disabled}` | `settlement_destination.{pending,activated,disabled}` | settlement_destination |
-| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks; `Review` now lives in `@nearpay/spec`) | review |
+| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks) | review — the bus `Review` is rendered with `toPublicReview()` into `PublicReview` (unix times; a review of a rails execution is shown as a review of its payment intent via `Review.payment_intent`; no `payment_intent` → not delivered) |
 
 Everything else (attempt, execution, internal events) is never exposed. Rendering per endpoint `api_version` is done by version transformers in `@nearpay/spec` (`webhooks/versions/*.ts`). Since spec 0.1.5 CheckoutSession and AgentPayment carry their own `sequence` too (payments and agentpay send their aggregate version). The producer's `sequence` is preferred: ingest stores it as `object_sequence` and rendering keeps it; only an object without a valid one (a producer older than 0.1.5) gets `aggregate.version` (api-conventions §9).
 

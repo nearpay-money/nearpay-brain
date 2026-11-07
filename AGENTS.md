@@ -22,7 +22,7 @@ You are an AI agent contributing to NearPay. These rules apply in every `nearpay
 | You want to… | Do this |
 |---|---|
 | Add/modify an endpoint or event | PR to `nearpay-spec` (additive within version) → release → bump in consumers |
-| Change a state machine | Update `architecture/domain-model.md` + property tests in the owning service in the same change set; money-path CODEOWNERS review |
+| Change a state machine | Update `architecture/domain-model.md` + property tests in the owning service in the same change set; money-path review per ADR-0020 decision 7 (lead-agent review + green property/contract/E2E checks) |
 | Make or reverse a design decision | New ADR in `decisions/` (copy the template); link it from the HLD |
 | Add a dependency on another service | Check HLD §5 allowed edges; if new, ADR + Cilium policy change in `nearpay-deploy` |
 | Rely on an external fact | Add it to `reference/landscape.md` with source + date; ⚠ + spike if unverified |
@@ -38,4 +38,4 @@ You are an AI agent contributing to NearPay. These rules apply in every `nearpay
 
 ## 5. Definition of done
 
-Spec updated → code + tests (unit, property for state machines, contract) → brain updated → CI green → human review on money paths.
+Spec updated → code + tests (unit, property for state machines, contract) → brain updated → CI green → money paths reviewed per ADR-0020 decision 7 (lead-agent review + green property/contract/E2E checks; never merged with a red or skipped check).

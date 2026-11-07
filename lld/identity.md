@@ -1,6 +1,6 @@
 # LLD — `nearpay-identity`
 
-> Version 1.5 (step 2.1 contracts: team, invitations, multi-account sessions, recovery, restricted keys, two-approver rule, audit export, console sessions and console routes, self-declared KYB semantics per ADR-0020 — §1, §4, §5, §6, §6.1, §7, §8.1, §11, §12, §16, §17) · Version 1.4 (step 1.4, spec 0.1.5: `GET /v1/auth/session` and `POST /v1/settlement_destinations/{id}/challenge` §6, `challenge` command §5, `attestation_challenges.superseded_at` §4) · Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.6 (step 2.1 integration, spec 0.2.0: unified console audit trail — identity consumes `evt.compliance.ops_action.recorded` / `evt.sentinel.ops_action.recorded` into `audit_events` §6.1/§7; `kyb_verified` / `verified_legal_name` keep their names, meaning "self-declared, ops-approved" §4) · Version 1.5 (step 2.1 contracts: team, invitations, multi-account sessions, recovery, restricted keys, two-approver rule, audit export, console sessions and console routes, self-declared KYB semantics per ADR-0020 — §1, §4, §5, §6, §6.1, §7, §8.1, §11, §12, §16, §17) · Version 1.4 (step 1.4, spec 0.1.5: `GET /v1/auth/session` and `POST /v1/settlement_destinations/{id}/challenge` §6, `challenge` command §5, `attestation_challenges.superseded_at` §4) · Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
@@ -264,7 +264,7 @@ Visibility `ops`, paths `/ops/…`, reached only through the console host (§8.1
 | `listOpsMerchants` · `getOpsMerchant` | `GET /ops/merchants` · `/{acct}` | `ops:identity.merchants.read` | `q` (exact `acct_` id or member email, name prefix), `status`, `kyb_status`, `live_enabled`; `OpsMerchant` = `Account` + owners, member count, active live destinations, `recovered_at` |
 | `listOpsAuditEvents` | `GET /ops/audit_events` | `ops:identity.audit.read` | platform audit log (`AuditEvent`), filters account, actor, actor type, action, target, created |
 
-Every console write (here and in the other services) is audited with `actor_type = operator`, `actor_id = usr_…`. Identity's own operator actions (sign-in, enrolment, step-up) are audited in `audit_events`; compliance and sentinel keep theirs in their own append-only logs (case events, `ops_approvals`, `kill_switch_log`), shown on the respective console pages.
+Every console write (here and in the other services) is audited with `actor_type = operator`, `actor_id = usr_…`. Identity's own operator actions (sign-in, enrolment, step-up) are audited in `audit_events` directly. **Unified audit trail (T-12, lead decision at step 2.1 integration):** compliance and sentinel publish every operator action as `evt.compliance.ops_action.recorded` / `evt.sentinel.ops_action.recorded` (`OpsActionEvent`, ids only); identity's consumer inserts one `audit_events` row per event (`id` = the event's action id, so redelivery is a no-op; `actor_type = operator`, `actor_id` = `actor.sub`, `details` = `{ops_role, approval, source: compliance|sentinel}`), so `listOpsAuditEvents` is one trail across services. Their own append-only logs (case events, `ops_approvals`, `kill_switch_log`) stay the detail source on the respective console pages. Payments' and rails' console writes (reconciliation, reverify) are audited locally for now; publishing them the same way is a follow-up (open question for the lead).
 
 ## 7. Events
 
@@ -283,6 +283,7 @@ Every console write (here and in the other services) is audited with `actor_type
 | `evt.compliance.kyb.submitted` (step 2.1) | set `kyb_status = pending` |
 | `evt.compliance.destination.blocked` | disable destination with reason `compliance` |
 | `evt.compliance.account.suspended` / `.reinstated` | set account `status` |
+| `evt.compliance.ops_action.recorded` · `evt.sentinel.ops_action.recorded` (step 2.1 integration) | insert into `audit_events` (one console audit trail, §6.1); idempotent on the action id |
 
 ## 8. Algorithms
 

@@ -1,6 +1,6 @@
 # LLD — `nearpay-payments`
 
-> Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` *Unreleased*: data §4, refund rules §5, API §6, events §7, refund algorithm §8.4, jobs §9, decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
+> Version 1.6 (step 2.1, Stage 2 contracts in `nearpay-spec` 0.2.0: data §4, refund rules §5, API §6 (console reconciliation on `/ops/…` §6.4), events §7, refund algorithm §8.4 (kill switch), jobs §9 (`reconciliation_diff` cases), decisions §17) · Version 1.5 (step 1.4, spec 0.1.5: `PublicCheckoutSession.payment_intent` §6.2, `CheckoutSession.sequence` §6.1, Turnstile test secrets §10) · Version 1.4 (step 1.2 implementation findings folded: data §4, intent and session rules §5, payer API §6.2, consumers §7, session/attempt algorithms §8, jobs §9, integrations §10, configuration §11) · Version 1.3 list filters instead of `/search` (ADR-0018) · Version 1.1 audited (`audits/payments.md`) · HLD §5.1, §7 · Domain model §2–§6 · Flows §2–§4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -269,11 +269,20 @@ The payer API never returns the merchant's raw destination address; it returns t
 | `POST /internal/checkout_sessions/{id}/agent_attempts` | agentpay (`payments.attempts.create`) | `{payer_wallet}` → creates (or reuses the caller's still-valid, non-expired) `intents_transfer` attempt and returns `{attempt_id, execution_id, account_id, livemode, intents_requirement}`; same guards as §8.2 (limits apply per session) |
 | `GET /internal/payment_intents/{id}/receipt-context` | notify (`payments.receipts.read`) | `{customer_email, merchant_display_name, amount, currency, settled, asset, evidence_links}` (PII; never in events) |
 | `GET /internal/customers/{id}` | billing (`payments.read`) | customer incl. decrypted email for invoicing |
-| `GET /internal/refunds/{id}` | services, ops (`payments.read`) | full refund (Stage 2) |
+| `GET /internal/refunds/{id}` | services (`payments.read`) | full refund (Stage 2; the console reads `GET /ops/refunds/{id}`, §6.4) |
 | `GET /internal/refunds/{id}/receipt-context` | notify (`payments.receipts.read`) | `RefundReceiptContext` `{customer_email, merchant_display_name, livemode, refund, payment_intent, original_amount/currency, refunded, received, recipient_display, evidence_links, email_receipts}` (Stage 2) |
-| `GET /internal/reconciliation_runs` · `/{id}` | ops console (`ops:payments.read`) | runs newest first; filters `account_id`, `livemode`, `status`, `day`, `day[gte\|lte]`, `unresolved` (replaces the planned `GET /internal/reconciliation/{account}/{day}`: use `account_id` + `day`) |
-| `POST /internal/reconciliation_runs` | ops console (`ops:payments.reconcile`) | `{account_id, livemode, day}` → `202` run (`running`); completed UTC days only (`reconciliation_day_open`); one running run per day (`state_conflict`) |
-| `POST /internal/reconciliation_runs/{id}/resolution` | ops console (`ops:payments.reconcile`) | `{classification, note}` on a `diff`/`error` run (RB-05) |
+| compliance `POST /internal/cases` (called by payments, `compliance.cases.write`) | — | payments opens a `reconciliation_diff` case for a `diff`/`error` run (§9) |
+
+### 6.4 Console (`/ops/…`, visibility `ops`, served by payments — Stage 2)
+
+Routed by the gateway only on the console host (dashboard-and-console §2); `@nearpay-internal/service` checks the ops scope, `opsRoles` (`ops`, `ops_admin`) and step-up. Every write is audited with the operator id.
+
+| Method & path | Scope · step-up | Purpose |
+|---|---|---|
+| `GET /ops/reconciliation_runs` · `/{id}` | `ops:payments.read` | runs newest first; filters `account`, `livemode`, `status`, `day`, `day[gte\|lte]`, `unresolved`, cursor paging (replaces the planned `GET /internal/reconciliation/{account}/{day}`: use `account` + `day`) |
+| `POST /ops/reconciliation_runs` | `ops:payments.reconcile` | `{account_id, livemode, day}` → `202` run (`running`); completed UTC days only (`reconciliation_day_open`); one running run per day (`state_conflict`); a re-run records `rerun_of` |
+| `POST /ops/reconciliation_runs/{id}/resolution` | `ops:payments.reconcile` · step-up | `{classification, note}` on a `diff`/`error` run (RB-05); corrections are new statement lines, never edits (INV-9) |
+| `GET /ops/refunds/{id}` | `ops:payments.read` | full refund with legs (console payment view) |
 
 ## 7. Events
 
@@ -290,6 +299,7 @@ Payment-link, customer and statement-line changes emit no events in v1 (no consu
 | `evt.identity.account.updated`, `evt.identity.settlement_destination.*` | refresh `settlement_contexts` |
 | `evt.compliance.review.opened` · `.closed` (subject = payment intent, or `execution` mapped to the intent through the attempt's `execution_id`) | set intent `compliance_review` (no state change; payment stands) |
 | `evt.compliance.policy.updated` | refresh cached geo policy (`GET /internal/geo-policy`) |
+| `evt.sentinel.kill_switch.engaged` · `.released` (Stage 2) | set the local kill-switch flag (version-checked); while engaged no new live refund leg is prepared (§17 item 16) |
 
 ## 8. Algorithms
 
@@ -353,6 +363,7 @@ tx: intent FOR UPDATE; status == succeeded, or requires_review with a short sett
     recipient = attempt.refund_to + origin asset/chain, type = attempt.refund_type (intents for intents_transfer)  // INV-7
     method = attempt.method == intents_transfer ? 'intents_transfer' : 'route_quote'
     insert refund(requires_action, idempotency_key) + leg 1 (preparing); amount_refund_pending += amount; outbox created
+livemode && kill switch engaged (payments consumes evt.sentinel.kill_switch.*; rails also refuses, §8.1 step 0) → 503 rail_unavailable, no leg, no recovery job (create, prepare)
 leg = rails POST /internal/refund_executions (idem 'refund:'+re+':leg:'+n, {method, reference:{pi, pa, re, n},
         source: destination_snapshot, recipient, amount, swap_type: fee_mode==payer_absorbs ? EXACT_INPUT : EXACT_OUTPUT})   // 8 s
   definitive error → refund failed(failure_code), pending released, error returned
@@ -366,6 +377,7 @@ next_action (from the execution view):
 tx: leg awaiting_signature(next_action, deadline, execution_id, execution_version); event refund.requires_action
 submit_tx {tx_hash}       → rails POST /internal/executions/{ex}/deposit_tx (refund stays requires_action until detection)
 submit_tx {signed_intent} → equal to the issued payload (signer, nonce, message) else 422 signed_intent_mismatch;
+                            live + kill switch engaged → 503 rail_unavailable (agentpay refuses the relay too, agentpay §8);
                             agentpay POST /internal/relay {execution_id, binding, signed, kind:'refund', refund}; leg submitted
 execution events (version-checked, like §8.3; matched by refund_legs.execution_id):
   deposit_detected/settling/verifying → leg processing, refund pending
@@ -385,7 +397,7 @@ execution events (version-checked, like §8.3; matched by refund_legs.execution_
 | `attempt.quoting_recovery` | every 15 s scan `status='quoting' and created_at < now()-20 s` | re-call rails with same idempotency key; after 2 min → `failed(rail_timeout)` |
 | `context.refresh` | on identity events (the consumer marks the context `stale` and enqueues the job) | sync the account's settlement context |
 | `context.sweep` | every 5 min | refresh stale contexts and contexts older than 5 min of accounts with `open`/`expiring` sessions (backstop to events) |
-| `reconcile.daily` | 02:00 UTC per account with activity | compare statement vs rails `GET /internal/evidence?account&day` (payment and refund executions) per asset: inflow (`payment` + `overpayment` lines vs settled payment executions), outflow (`refund` lines vs settled refund executions), fees (statement estimates vs observed fees when rails reports them); write an append-only run (`rcn_`); a `diff`/`error` run is the ops case (console "Reconciliation runs", RB-05; resolution via `…/resolution`); metric + alert on any diff |
+| `reconcile.daily` | 02:00 UTC per account with activity | compare statement vs rails `GET /internal/evidence?account&day` (payment and refund executions) per asset: inflow (`payment` + `overpayment` lines vs settled payment executions), outflow (`refund` lines vs settled refund executions), fees (statement estimates vs observed fees when rails reports them); write an append-only run (`rcn_`); a `diff`/`error` run opens a `reconciliation_diff` compliance case through compliance `POST /internal/cases` (`Idempotency-Key: rcn:<run id>`, subject `reconciliation_run`) so it lands in the console case queue; the run itself is read and resolved on `/ops/reconciliation_runs…` (§6.4, RB-05); metric + alert on any diff |
 | `refund.prepare_recovery` | every 15 s: legs `preparing` older than 20 s | re-call rails with the same idempotency key; after 2 min → refund `failed(rail_timeout)` |
 | `kit.purge` | hourly | idempotency, inbox, published outbox |
 
@@ -443,7 +455,7 @@ execution events (version-checked, like §8.3; matched by refund_legs.execution_
 | 2 | refunds (+ legs, dashboard signing), payment links, customers, `POST /v1/payment_intents`, richer list filters on payment intents (ADR-0018), review accept/reject, reconciliation — contracts in §17 |
 | 3 | internal invoice sessions for billing |
 
-## 17. Stage 2 contracts (step 2.1, `nearpay-spec` *Unreleased*)
+## 17. Stage 2 contracts (step 2.1, `nearpay-spec` 0.2.0)
 
 Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.ts`, additions in `payments.ts`; internal `payments.ts`, refund legs in `rails.ts`, relay in `services.ts`, `sandbox.ts`; events `evt.payments.refund.*`. Decisions made by the contract (not in earlier versions of this LLD):
 
@@ -453,12 +465,13 @@ Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.
 4. **Overpayment refunds.** `payment_attempt` on create refunds a specific settled attempt (recipient = that attempt's refund address; refundable per attempt). Needed for scenario `06`.
 5. **Duplicate legs.** If two legs of one refund both settle (merchant sent to an expired-then-re-prepared leg and to the new one), the second is `duplicate`, its amount is added to `extra_amount_sent` and gets its own statement line (`refund_leg`). Sandbox scenario `06` on a refund leg reproduces it (sandbox §4).
 6. **Create semantics.** Definitive preparation errors are returned and the refund is recorded `failed` (retry with `prepare`); transient rail failures return `201` with `next_action: null` and a recovery job (§9). Refund creation is replay-safe through `refunds.idempotency_key`.
-7. **Cancel vs truth.** `cancel` is allowed only before anything was submitted for the current leg; a deposit the merchant still makes to an open leg either returns to the destination (deadline) or, if it settles, moves the refund to `succeeded` (INV-3). This adds edges `canceled → succeeded` and `failed → succeeded` (older leg) to domain-model §4.4 — requested from the brain owner.
+7. **Cancel vs truth.** `cancel` is allowed only before anything was submitted for the current leg; a deposit the merchant still makes to an open leg either returns to the destination (deadline) or, if it settles, moves the refund to `succeeded` (INV-3). This adds edges `canceled → succeeded` and `failed → succeeded` (older leg) to domain-model §4.4 — accepted at integration (domain-model v1.4).
 8. **Recipient override (INV-7).** `POST /v1/refunds/{id}/recipient`: session, owner, step-up; same asset/chain/type; rails screens again (`screen: true`) when preparing the new leg.
 9. **Review decisions.** `accept` is allowed for `short_settlement` only: a `verification_held` intent has no evidence and accepting it would mark it succeeded without evidence (INV-2) → `review_requires_evidence`. `reject` returns the intent to `requires_payment` (session open) or `expired`, emits `payment_intent.payment_failed` when it returns to `requires_payment`, and by default (`create_refund`) creates a `review_rejection` refund of the settled amount for the merchant to sign. The decision is on the intent as `review_decision`.
 10. **`POST /v1/payment_intents` uses a headless session.** The payer API is session-scoped, so an API intent is created with a checkout session (`ui_mode: hosted`, `success_url` = `return_url`) whose `client_secret` is returned once in `CreatedPaymentIntent` (never on `PaymentIntent` or in events).
 11. **Payment links** are deactivated, not deleted; `uses` counts succeeded payments; a link with `uses ≥ max_uses` answers `link_inactive`. Payer routes are anonymous (identity §11 allow-list `GET|POST /v1/payment_links/{id}/public/**`) with rate limits; attempts on the resulting session stay Turnstile-protected.
 12. **Metadata filters** (`metadata[key]=value`) arrive as flat query keys; spec helper `withMetadataFilter` accepts at most 10 such keys and rejects any other unknown key; OpenAPI documents them as one `deepObject` parameter.
-13. **Reconciliation runs** get the `rcn_` prefix (ops object, not public), are append-only (a re-run records `rerun_of`), and a `diff`/`error` run is the RB-05 ops case. "Zero diffs" is demonstrable as a run in status `ok` with `diff_count: 0` (console page, or `GET /internal/reconciliation_runs?account_id=…&day=…`).
+13. **Reconciliation runs** get the `rcn_` prefix (ops object, not public), are append-only (a re-run records `rerun_of`), and a `diff`/`error` run is the RB-05 ops case. "Zero diffs" is demonstrable as a run in status `ok` with `diff_count: 0` (console page, or `GET /ops/reconciliation_runs?account=…&day=…`). Integration decision: the runs are console (`ops`) routes, not `/internal/*` (which the gateway never routes), and a `diff`/`error` run opens a `reconciliation_diff` case in compliance (`createInternalCase`) — compliance owns cases.
 14. **Reviews as webhooks.** Compliance reviews are delivered as `review.opened` / `review.closed` with `PublicReview`; a review of an execution is shown as a review of its payment intent (`Review.payment_intent`, filled by compliance from `Execution.reference`, which rails echoes from the create request — payments sends `reference` on payment executions from Stage 2). Unattributable reviews are not delivered.
 15. **Refund receipts.** notify resolves the recipient via `GET /internal/refunds/{id}/receipt-context` (customer email of the intent or its session; never in events).
+16. **Kill switch blocks live refunds (lead decision, integration).** While the kill switch is engaged, payments refuses to prepare new **live** refund legs (`create`, `prepare` → `503 rail_unavailable`) and agentpay refuses live refund relays (`kind: refund`, agentpay §8), fail closed: the deposit-instruction integrity concern that triggers the switch applies to refund route legs too. Legs already funded by the merchant keep being tracked and verified (truth wins, INV-3). Test mode is unaffected; refunds resume on release.

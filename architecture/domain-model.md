@@ -1,6 +1,6 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.4 (step 2.1, spec 0.2.0: `inv_`, `aud_`, `opa_`, `bl_`, `rcn_` prefixes; refund edges `canceled|failed → succeeded` §4.4; reconciliation runs §6) · Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
@@ -15,6 +15,9 @@
 | `chl_` | Attestation challenge | identity |
 | `fs_` | Fee schedule | identity |
 | `ses_` | Dashboard session | identity |
+| `inv_` | Team invitation (Stage 2) | identity |
+| `aud_` | Audit event (Stage 2; the console audit log, one trail) | identity |
+| `opa_` | Ops approval — two-person console request (Stage 2) | compliance, sentinel |
 | `cs_` | CheckoutSession | payments |
 | `pi_` | PaymentIntent | payments |
 | `pa_` | PaymentAttempt | payments |
@@ -22,6 +25,7 @@
 | `plink_` | PaymentLink | payments |
 | `cus_` | Customer | payments |
 | `txn_` | BalanceTransaction (statement line) | payments |
+| `rcn_` | Reconciliation run (Stage 2; ops object, never public) | payments |
 | `prod_` / `price_` | Product / Price | billing |
 | `in_` | Invoice | billing |
 | `sub_` | Subscription | billing |
@@ -33,6 +37,7 @@
 | `we_` | WebhookEndpoint | webhooks |
 | `whd_` | Webhook delivery | webhooks |
 | `case_` | Compliance case | compliance |
+| `bl_` | Blocklist entry (Stage 2) | compliance |
 | `scr_` | Screening result | compliance |
 | `pol_` | Geo policy | compliance |
 | `ks_` | Kill switch | sentinel |
@@ -246,9 +251,13 @@ stateDiagram-v2
   pending --> succeeded: payer-side evidence verified
   pending --> failed: provider refunded to merchant / failed
   failed --> requires_action: merchant retries (new leg)
+  canceled --> succeeded: an older leg still settles (INV-3)
+  failed --> succeeded: an older leg still settles (INV-3)
   succeeded --> [*]
   canceled --> [*]
 ```
+
+**Truth wins (INV-3, Stage 2).** `canceled` and `failed` are not final against evidence: if a leg the merchant had already funded still settles payer-side (verified evidence), the refund moves to `succeeded` and is recorded like any success (statement `refund` line, `refund.succeeded`). `pending` (`refund.pending`) means a merchant deposit was detected for the current leg (lld/payments.md §17). The kill switch blocks new live refund legs and live refund relays (fail closed, lld/payments.md §17); refunds resume on release.
 
 `refundable = amount_settled − Σ(refunds in requires_action|pending|succeeded)`, enforced under `SELECT … FOR UPDATE` on the PaymentIntent row.
 
@@ -316,4 +325,4 @@ NearPay holds no balances, so the "ledger" is a **statement** of what settled wh
 | `refund` | refund succeeded | amount (asset), evidence |
 | `fee_adjustment` | reconciliation finds observed fee ≠ expected | delta |
 
-Daily reconciliation (per merchant, per asset): Σ statement = Σ verified evidence; fees reconciled against Explorer `appFees`. Any non-zero diff opens an ops case (target: zero).
+Daily reconciliation (per merchant, per asset): Σ statement = Σ verified evidence; fees reconciled against Explorer `appFees`. Any non-zero diff opens an ops case (target: zero). Stage 2: each run is an append-only `ReconciliationRun` (`rcn_`; a re-run records `rerun_of`), read and resolved in the console (`/ops/reconciliation_runs…`, served by payments); a `diff`/`error` run makes payments open a `reconciliation_diff` compliance case (`POST /internal/cases`), so diffs share the ops case queue (lld/payments.md §9, lld/compliance.md).

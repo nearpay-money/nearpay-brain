@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; kill switch blocks live refund relays §8; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -173,7 +173,7 @@ Checkout/refund kinds do not emit evidence themselves: rails' NEAR indexer match
 
 Checkout payloads emit nothing (rails' indexer is the single evidence path).
 
-Consumed: `evt.sentinel.kill_switch.engaged` → stop accepting new **live** x402 settles **and** new live checkout relays / `agent_pay` (`503 rail_unavailable`) until released; replays of already-queued payloads and the batcher continue; test mode is unaffected. Blocking checkout relays is the conservative reading of this section (which named only x402 settles), to be revisited.
+Consumed: `evt.sentinel.kill_switch.engaged` → stop accepting new **live** x402 settles **and** new live checkout relays / `agent_pay` (`503 rail_unavailable`) until released; replays of already-queued payloads and the batcher continue; test mode is unaffected. Blocking checkout relays is the conservative reading of this section (which named only x402 settles), to be revisited. **Stage 2 (lead decision at step 2.1 integration):** live refund relays (`/internal/relay` `kind: refund`) are refused the same way (`503 rail_unavailable`, fail closed) — the deposit-instruction integrity concern applies to refund route legs too; payments also stops preparing live refund legs (payments §17 item 16). Refunds resume on release.
 
 ## 9. Relayer accounts and keys
 

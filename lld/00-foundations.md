@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.5 (step 2.1 rails-fx: kit money FX helpers, http call headers, intents `sendSignedTx`; spec exact rates; changes in §20) · Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.6 (step 2.1 integration: Stage 2 service and ops scopes §9, spec 0.2.0 §3) · Version 1.5 (step 2.1 rails-fx: kit money FX helpers, http call headers, intents `sendSignedTx`; spec exact rates; changes in §20) · Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -169,15 +169,15 @@ create table dead_letters (id uuid primary key, source text not null, subject te
 
 | Client | Scopes |
 |---|---|
-| identity | `compliance.screen`, `rails.read`, `notify.send` |
-| payments | `identity.context.read`, `rails.executions.write`, `rails.read`, `agentpay.relay`, `compliance.read`, `sandbox.use` |
+| identity | `compliance.screen`, `rails.read`, `notify.send`, `compliance.read` (Stage 2: approved KYB details) |
+| payments | `identity.context.read`, `rails.executions.write`, `rails.read`, `agentpay.relay`, `compliance.read`, `sandbox.use`, `compliance.cases.write` (Stage 2: `reconciliation_diff` cases) |
 | rails | `compliance.screen`, `sandbox.use` |
 | agentpay | `payments.attempts.create`, `payments.read`, `rails.read`, `identity.context.read`, `compliance.screen`, `sandbox.use` |
 | sentinel | `rails.read`, `sandbox.use` (+ DB role `sentinel_ro`) |
 | billing | `payments.sessions.create`, `payments.read`, `notify.send` |
 | notify | `identity.recipients.read`, `payments.receipts.read`, `billing.read` |
 | compliance, webhooks, sandbox | none outbound |
-| ops principals (`ptype=ops`) | `compliance.kyb.decide`, `compliance.cases.write`, `sentinel.killswitch`, `rails.read`, `payments.read` |
+| ops principals (`ptype=ops`) | `compliance.kyb.decide`, `compliance.cases.write`, `sentinel.killswitch`, `rails.read`, `payments.read`; Stage 2 (spec 0.2.0, `OPS_SCOPES`): `console.session`, `identity.merchants.read`, `identity.audit.read`, `compliance.read`, `compliance.accounts.write`, `compliance.blocklist.write`, `compliance.screen`, `sentinel.read`, `sentinel.findings.write`, `payments.reconcile`, `rails.verify`. Both console roles hold all of them; what only `ops_admin` may do is set per route by `opsRoles` (checked against the `ops_role` claim) |
 
 EdDSA (Ed25519) signatures, `kid` header, JWKS at identity `/internal/jwks` (cached 5 min, refetch on unknown `kid`). `@nearpay-internal/service` verifies the token and authorizes every route from its spec definition before the handler runs (principal type, key/service/ops scopes, session roles and step-up, test-mode-only); routes open at the gateway (`anonymous`, `client_secret`, `gateway`, `internal`, `service_client`) accept requests without a token and expose an authorized principal only when one matches. Handlers call `requireScope` for finer checks. Headers: `X-NearPay-Token`, `X-Request-Id`, `traceparent`, `Idempotency-Key`, `NearPay-Version`.
 
