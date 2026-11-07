@@ -127,7 +127,7 @@ Rationale: root servers for anything stateful or latency-critical (dedicated cor
 | Chain RPCs (verifiers) | ≥ 2 providers per Tier-A chain family; results must agree for amounts ≥ USD 10k |
 | 1Click / Explorer | Single provider (R-01); circuit breakers; direct-intents path for Intents-native payments |
 | Email | Primary + fallback transactional provider |
-| Screening / KYB vendors | Single each; fail policy per §13 of HLD |
+| Screening / KYB vendors | None in v1 (ADR-0020: local OFAC list + blocklist, self-declared KYB); later single each; fail policy per §13 of HLD |
 | Cloudflare | Single edge (accepted R-05); status page hosted outside Cloudflare and netcup |
 | GitHub / GHCR | Zot cache; deploys pause, runtime unaffected |
 

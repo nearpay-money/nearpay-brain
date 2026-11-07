@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.5 (owner decisions 2026-11-07, ADR-0020: Q-VEN-01 superseded, Q-VEN-02 deferred, Q-VEN-05 decided for v1; OQ-T-03 added) · Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -34,6 +34,7 @@
 |---|---|---|---|
 | **OQ-T-01** | ~~Query grammar of `GET /v1/payment_intents/search`~~ | **Decided:** no search endpoints; typed filters on list endpoints (ADR-0018) | Closed 2026-11-05 |
 | **OQ-T-02** | ~~Request/response shapes of ops HTTP routes for compliance cases, blocklist edits and sentinel findings~~ | **Decided:** specified together with the Stage 2 console, their first network consumer; Stage 1 keeps these actions in the in-process ops CLI with no network path | Closed 2026-11-05 |
+| **OQ-T-03** | How are `auto_debit` mandates exercised in test mode, now that Stage 4 exits on a test-mode E2E instead of a mainnet demo (ADR-0020)? Neither the sandbox nor billing specifies a test-mode vault | Billing + sandbox LLD owners specify a sandbox vault stand-in (mandate create/collect/cancel/withdraw events in the same shapes as the vault's) in step 4.1; until then Stage 4 auto-debit E2E is blocked | Step 4.1 |
 
 **OQ-T-01 write-up.** The owner chose typed list filters over a Stripe-style query language: one validated mechanism, no parser, each filter backed by a deliberate index. `GET /v1/payment_intents` adds `amount`, `currency`, `asset_id` and `metadata[key]` filters in Stage 2; `/search` is removed from the conventions and the payments LLD.
 
@@ -112,14 +113,22 @@ Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR 
 
 | ID | Choice | Shortlist |
 |---|---|---|
-| Q-VEN-01 | KYB vendor | Sumsub, Persona |
-| Q-VEN-02 | Address screening | Chainalysis (sanctions API + KYT), TRM Labs, Elliptic |
+| ~~Q-VEN-01~~ | ~~KYB vendor~~ — **superseded for v1:** self-declared KYB + ops decision (ADR-0020) | ~~Sumsub, Persona~~ |
+| Q-VEN-02 | Address screening — **deferred:** v1 uses the local OFAC list + blocklist (ADR-0020) | Chainalysis (sanctions API + KYT), TRM Labs, Elliptic |
 | Q-VEN-03 | Off-provider EU object storage | Hetzner Object Storage, Backblaze B2 (EU), Scaleway |
 | Q-VEN-04 | Transactional email (primary/fallback) | Postmark, Amazon SES, Resend |
-| Q-VEN-05 | FX and price feeds | ECB reference + commercial FX API; secondary crypto price source (e.g. Pyth, CoinGecko) |
+| ~~Q-VEN-05~~ | FX and price feeds — **decided for v1:** ECB reference rates + a keyless public crypto price feed (ADR-0020) | ~~ECB reference + commercial FX API; secondary crypto price source (e.g. Pyth, CoinGecko)~~ |
 | Q-VEN-06 | On-call paging + status page | external SaaS (must be outside Cloudflare and netcup) |
 
+**Q-VEN-01 write-up (2026-11-07, superseded by ADR-0020).** No KYB vendor in v1. Merchants self-declare minimum business details (legal name, country of incorporation, registration number, business type, website, business address, representative name/role, expected monthly volume band); ops approves or rejects them in the console through the existing manual KYB decision endpoint, which gates live mode (FR-ACC-05 unchanged). No hosted flow, vendor applicant or vendor webhook. Reopen when the launch jurisdiction (Q-LEG-01), 1Click or a partner requires verified KYB.
+
+**Q-VEN-02 write-up (2026-11-07, deferred by ADR-0020).** Every screening context (FR-CMP-02) runs on the Stage 1 local OFAC SDN digital-currency list + blocklist (SP-15) behind a vendor-neutral screening interface with one provider, `local`; the fail policy is unchanged. A vendor becomes a second provider behind the same interface without a contract change. Reopen when volume, non-NEAR exposure or a partner calls for exposure (KYT) screening.
+
+**Q-VEN-05 write-up (2026-11-07, decided for v1 by ADR-0020).** Fiat FX: ECB euro reference rates (daily XML, 29 currencies, published ≈ 16:00 CET on TARGET working days, "for information purposes only"; `reference/landscape.md` §8). Secondary token price for the dual-source deviation check: a keyless public crypto price feed. Both sit behind provider interfaces in rails; no keys, no paid plans; stale or missing data → `pricing_unavailable`. Rails §8/§10 pick the concrete feed and set staleness bounds that tolerate weekends and TARGET holidays. A real-time FX source is a later provider.
+
 ## Mainnet findings carried into Stage 2 (2026-11-07)
+
+**Stage 2 step 2.1 note.** The 1Click nullish finding below is being addressed in `@nearpay/spec` in step 2.1 (nullish `OneClick*` fields, status-only quote response with optional `correlationId`); once released, rails and sentinel can drop their pre-validation normalisation and the sandbox serves the live shape.
 
 - **Spec transcription of live 1Click.** Live 1Click sends `null` for unset optional fields and omits the nested `quoteResponse.correlationId` on `GET /v0/status` (reference/landscape.md §2). rails and sentinel normalise bodies before validation (rails #2, sentinel #2); the sandbox cannot mirror these two quirks because the spec schemas reject them. Step 2.1: make those `OneClick*` fields nullish and add a status-only quote response with an optional `correlationId`, then let the sandbox serve the live shape.
 

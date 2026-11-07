@@ -1,6 +1,6 @@
 # Core Flows
 
-> Version 1.0 · Sequence-level detail for HLD §7. Service names = repos without the `nearpay-` prefix.
+> Version 1.1 (§1 onboarding: v1 self-declared KYB, ADR-0020) · Version 1.0 · Sequence-level detail for HLD §7. Service names = repos without the `nearpay-` prefix.
 
 ## 1. Merchant onboarding and settlement destination
 
@@ -11,14 +11,13 @@ sequenceDiagram
   participant D as Dashboard SPA
   participant ID as identity
   participant C as compliance
-  participant K as KYB vendor
+  participant O as Ops console
   participant W as Merchant wallet
   M->>D: sign up (email + passkey)
   D->>ID: create account (test mode on immediately)
   M->>D: start KYB
-  D->>C: create KYB case
-  C->>K: applicant + hosted flow
-  K-->>C: webhook: approved
+  D->>C: submit self-declared business details (KYB case)
+  O->>C: ops KYB decision: approve
   C-->>ID: evt compliance.kyb.approved
   M->>D: add destination (asset, chain or Intents account, address)
   D->>ID: POST /v1/settlement_destinations (step-up passkey)

@@ -1,7 +1,7 @@
 # External Landscape — Verified Facts
 
 > Facts the design depends on, with source and date read. **Re-verify before relying on anything older than 90 days.** Items marked ⚠ are unconfirmed and tracked as spikes in `roadmap/open-questions.md`.
-> Last verified: 2026-11-06 (step 1.2 observations: 1Click quote signature and appFees split, DIP-4 transfer shape, Explorer API contract, NEAR tx status); 2026-11-05 (1Click OpenAPI v0.1.10, hackathon rules added).
+> Last verified: 2026-11-07 (ECB reference rates, §8); 2026-11-06 (step 1.2 observations: 1Click quote signature and appFees split, DIP-4 transfer shape, Explorer API contract, NEAR tx status); 2026-11-05 (1Click OpenAPI v0.1.10, hackathon rules added).
 
 ## 1. NEAR Intents (settlement fabric)
 
@@ -88,3 +88,10 @@
 | No Intents testnet (Q-007): use mainnet, separate dev accounts, tiny amounts, `dry: true` quotes. 1Click without key: +0.2% fee (Q-006). | Sandbox for test mode; canaries cost-capped. |
 | Tracks used: `realworld` (stablecoins, NEAR Intents, meta transactions) and `agents` (agent commerce, NEAR Intents). | Stage 1 = checkout + agent payments. |
 | Never without explicit human confirmation: submit, post, make public, push, sign, spend, deploy to mainnet, commit secrets. Do not invent accounts. | Agents prepare; humans execute. |
+
+## 8. Price and FX sources (v1, ADR-0020)
+
+| Fact | Design consequence | Source |
+|---|---|---|
+| ECB euro foreign exchange reference rates: 29 currencies against EUR, published usually around 16:00 CET on every TARGET working day (none at weekends and on TARGET closing days); latest rates as XML at `https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml` (also CSV zip, 90-day and full history XML); no key. "Published for information purposes only"; using them for transactions is "strongly discouraged". | v1 fiat FX provider (rails). Cross rates via EUR; staleness bound must tolerate weekends/holidays (up to ≈ 4 days at Easter); non-USD fiat prices drift between publications — disclosed residual in ADR-0020. | https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html (read 2026-11-07) |
+| Secondary crypto price feed: not yet chosen; must be public and keyless. | Rails picks the feed (rails §8/§10) and records its endpoint, rate limit and terms here before use. | ⚠ to be added by the rails builder |

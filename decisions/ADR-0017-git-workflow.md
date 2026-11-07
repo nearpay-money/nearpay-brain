@@ -1,6 +1,6 @@
 # ADR-0017: Git workflow — `main` plus feature branches merged by pull request
 
-- **Status:** Accepted
+- **Status:** Accepted; decisions 3–5 amended by ADR-0020 (the lead agent reviews and merges pull requests, including money-path pull requests; merging leaves the human-only list)
 - **Date:** 2026-11-05
 - **Deciders:** Owner; Principal Engineer
 - **Amends:** ADR-0016 decision 5 (pushing feature branches and opening pull requests are delegated to the agent)

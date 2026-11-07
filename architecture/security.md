@@ -1,6 +1,6 @@
 # Security Architecture and Threat Model
 
-> Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
+> Version 1.1 (ADR-0020: AI-agent vault audits, merges by the lead agent, local screening, self-declared KYB — T-10, T-14, T-15 updated) · Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
 
 ## 1. What we protect (ranked)
 
@@ -80,12 +80,12 @@ flowchart LR
 | **T-07** | Agent payment replay / reuse for another resource (S, T) | Verifier nonces; `memo = binding` (hash of requirement + resource URL + merchant); deadline ≤ `maxTimeoutSeconds` | Low |
 | **T-08** | Quote/attempt flooding to exhaust 1Click quota (D) | Turnstile before live quotes; per-session/IP/merchant limits; indicative pricing without quotes; cost alarms | Low |
 | **T-09** | Price oracle manipulation / stablecoin depeg (T) | Dual-source deviation check; depeg guard; snapshot per attempt; quote validity bound | Low |
-| **T-10** | Vault contract bug drains mandates (T, E) | Minimal code, no admin fund methods, no access keys, per-mandate and global caps, two independent audits, property tests + fuzzing, bug bounty | Medium (inherent) |
+| **T-10** | Vault contract bug drains mandates (T, E) | Minimal code, no admin fund methods, no access keys, per-mandate and global caps, two independent audits, property tests + fuzzing, bug bounty. **v1 (ADR-0020):** the two external audits are replaced by independent AI-agent audits; mainnet deployment stays human-signed; low global TVL cap; a human audit is recommended before the vault holds material value | Medium (inherent; weaker assurance in v1 until a human audit) |
 | **T-11** | Supply-chain compromise of checkout/widget (T) | Pinned lockfiles, `npm ci --ignore-scripts`, provenance, reproducible static build, SRI, no runtime third-party scripts except Turnstile + bundled wallet SDKs, separate deploy credentials | Medium |
 | **T-12** | Insider / ops abuse (E, R) | Console behind Cloudflare Access + hardware keys; RBAC; two-person rule for merchant suspension/unsuspension; immutable audit log shipped to object-locked storage | Low |
 | **T-13** | DB exfiltration (I) | PII field encryption; secrets hashed/encrypted; backups encrypted; least-privilege roles per service | Low |
-| **T-14** | Sanctioned funds through platform (compliance) | Pre-screening, post-screening, geo policy, KYB, case management | Medium (non-custodial cannot block in-flight) |
-| **T-15** | AI coding agent introduces unsafe change in money path (T) | CODEOWNERS: human review required for `**/money/**`, state machines, migrations, contracts, auth; invariant property tests in CI; protected branches; agents have no prod credentials; deploys via GitOps PR | Low |
+| **T-14** | Sanctioned funds through platform (compliance) | Pre-screening, post-screening, geo policy, KYB, case management. **v1 (ADR-0020):** screening uses the local OFAC list + blocklist only (no exposure/KYT screening); KYB is self-declared with an ops decision | Medium (non-custodial cannot block in-flight; higher in v1 — sanctioned addresses only, unverified KYB) |
+| **T-15** | AI coding agent introduces unsafe change in money path (T) | CODEOWNERS: human review required for `**/money/**`, state machines, migrations, contracts, auth; invariant property tests in CI; protected branches; agents have no prod credentials; deploys via GitOps PR. **v1 (ADR-0020):** the lead agent reviews and merges money-path pull requests; CODEOWNERS paths require green invariant property, contract and stage E2E checks (never merged red or skipped); mainnet deployment and signing stay human; a human review of money-path diffs is recommended before material volume | Low; **Medium in v1** (no human review before merge) |
 | **T-16** | Relayer/gas account drained by spam (D) | Function-call allowance caps; per-merchant facilitator quotas; auto top-up with daily ceiling; alerting | Low |
 
 ## 5. Application security baseline

@@ -46,9 +46,9 @@ flowchart LR
     CH[EVM, Solana, Bitcoin, NEAR, Tron, TON, ...]
   end
   subgraph Vendors
-    KYB[KYB vendor]
-    SCR[Address screening vendor]
-    PR[Price and FX feeds]
+    KYB["KYB vendor: post-v1, v1 KYB is self-declared, ADR-0020"]
+    SCR["Address screening vendor: post-v1, v1 uses the local OFAC list, ADR-0020"]
+    PR["Price and FX feeds: v1 ECB reference rates + keyless public crypto feed"]
     EM[Email provider]
     CF[Cloudflare edge]
   end
@@ -93,6 +93,10 @@ flowchart LR
 | [0014](../decisions/ADR-0014-auth-gateway.md) | Traefik gateway + ForwardAuth to `identity`; internal short-lived JWTs |
 | [0015](../decisions/ADR-0015-v1-single-host-compose.md) | **v1:** every service its own container in one Docker Compose stack on a single host (local first, netcup last) |
 | [0016](../decisions/ADR-0016-entry-repo-and-hackathon.md) | Thin `nearpay` entry repo; NEAR Hackathon compliance (tracks Real-World Money + Agent Economy) |
+| [0017](../decisions/ADR-0017-git-workflow.md) | Git workflow: `main` + feature branches merged by pull request |
+| [0018](../decisions/ADR-0018-list-filters-not-search.md) | Typed filters on list endpoints instead of search endpoints |
+| [0019](../decisions/ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites |
+| [0020](../decisions/ADR-0020-v1-delivery-and-vendor-scope.md) | **v1 by 2026-11-14:** stages exit on green test-mode E2E, one v1 mainnet demo; self-declared KYB + ops decision (no KYB vendor); local OFAC screening behind a vendor-neutral interface; ECB FX + keyless public crypto price feed; AI-agent vault audits (mainnet deploy human-signed); merges, incl. money paths, delegated to the lead agent |
 
 ## 5. Container view
 
@@ -128,7 +132,7 @@ flowchart TB
     VRF[(intents.near + NEAR RPC)]
     CHR[(chain RPCs)]
     MSH[(merchant endpoints)]
-    EML[(email, KYB, screening)]
+    EML[(email, OFAC list)]
   end
 
   CDN2 -. iframe .-> CDN1
@@ -159,7 +163,7 @@ flowchart TB
 | **billing** | Product, Price, Invoice, Subscription, Mandate (mirror of vault) | `/v1/products`, `/v1/prices`, `/v1/invoices`, `/v1/subscriptions`, `/v1/mandates` | api, scheduler, keeper | payments, notify, NEAR RPC |
 | **rails** | Token registry, Price snapshot, Execution, ProviderObservation, Verification | `/v1/assets` (read-only); internal `/executions`, `/quotes` | api, hot-poller, explorer-feed, near-indexer, destination-watchers, verifier, archiver | 1Click, Explorer, NEAR RPC, chain RPCs, compliance, sandbox |
 | **agentpay** | FacilitatorPayment, RelayBatch, RelayerKey | `/x402/supported`, `/x402/verify`, `/x402/settle`, `/v1/checkout/sessions/{id}/agent_pay` | api, batcher | intents.near, compliance, payments |
-| **compliance** | ScreeningResult, KybCase, GeoPolicy, Case, Blocklist | internal only (+ console) | api, refresher | screening vendor, KYB vendor |
+| **compliance** | ScreeningResult, KybCase, GeoPolicy, Case, Blocklist | internal only (+ console) | api, refresher | local OFAC list + blocklist (v1; screening and KYB vendors post-v1, ADR-0020) |
 | **webhooks** | Event (public log), WebhookEndpoint, Delivery | `/v1/events`, `/v1/webhook_endpoints` | api, ingest, dispatcher | NATS, egress proxy |
 | **notify** | Template, Message | internal | worker | email provider |
 | **sandbox** | Simulated quotes/executions/chains | internal (`rails` test-mode provider) | api | — |
@@ -188,7 +192,7 @@ The core question for a non-custodial design is *"who can move which funds?"*. T
 **Residual power:** NearPay chooses the quote `recipient` at quote time. A compromised `payments`/`rails` tier could quote to an attacker address. Defence in depth:
 1. The destination snapshot originates only in `identity` (separate DB, role and CODEOWNERS); `rails` asserts `quote.recipient == snapshot`.
 2. **Two-party release of deposit instructions:** the checkout SPA renders a deposit address only together with a **co-signature from `nearpay-sentinel`** (Ed25519 key pinned in the SPA build). Sentinel signs only after it independently (own code, own credentials) re-reads the quote from 1Click status by `depositAddress` and confirms `recipient`/`destinationAsset` match an **active destination in identity's registry** (read-only replica role) for that account, and amount/deadline match the attempt. Fail-closed; p99 budget 1.5 s (one provider status call; cached ≤ 50 ms).
-3. The checkout SPA is built and deployed by a separate pipeline (SRI, CSP) and shows the merchant's KYB-verified name and destination fingerprint.
+3. The checkout SPA is built and deployed by a separate pipeline (SRI, CSP) and shows the merchant's KYB-approved legal name (self-declared and approved by ops in v1, ADR-0020) and destination fingerprint.
 4. ⚠ Client-side verification of 1Click's own quote `signature` once the scheme is confirmed (SP-01).
 Remaining exposure requires compromising `identity` *and* bypassing its attestation/cool-off/notification controls — see `architecture/security.md` T-03.
 
@@ -256,7 +260,7 @@ flowchart LR
   - *NEAR indexer* — streams finalized blocks, filters `intents.near` and vault events for known merchant Intents accounts / mandates; gives evidence for `INTENTS` recipients and agent payments without any provider.
   - *Destination watchers* — for Tier-A destination chains (EVM in P1; Solana/Bitcoin in P3) one `eth_getLogs`-style scan per block range over **all** active merchant destination addresses detects incoming transfers. Attribution uses an **amount tag**: each in-flight execution to the same `(destination, asset)` gets a unique sub-cent offset in the least-significant digits of the quoted output (≤ USD 0.01 equivalent, allocated under a unique constraint), so a transfer of exactly `settlement_amount + tag` maps to one execution. Success detection therefore does not depend on provider polling; provider status is needed only for progress UX, refunds and failures.
 - **Verification tiers (ADR-0012):** Tier A (NEAR/Intents, EVM chains, Solana, Bitcoin) → independent RPC check of destination tx (recipient, asset, amount ≥ expected, finality per chain). Tier B (other chains) → provider-attested with per-payment limits and daily reconciliation via Explorer. Verification failure → `held` + page on-call; never auto-success.
-- **Pricing** (needed only when the settlement asset is not at par with the pricing currency — stablecoin merchants keep working if price feeds fail, because `EXACT_OUTPUT` quotes price the payer's side): token USD prices from `/v0/tokens` (≤ 30 s old) cross-checked against an independent price source (deviation > 1.5% → `pricing_unavailable`); fiat FX from a real-time FX API with ECB fallback; stablecoin par policy with depeg guard (|price − 1| > 2% disables par). Each attempt stores a `price_snapshot`.
+- **Pricing** (needed only when the settlement asset is not at par with the pricing currency — stablecoin merchants keep working if price feeds fail, because `EXACT_OUTPUT` quotes price the payer's side): token USD prices from `/v0/tokens` (≤ 30 s old) cross-checked against an independent price source (deviation > 1.5% → `pricing_unavailable`); fiat FX from a real-time FX API with ECB fallback (**v1, ADR-0020:** ECB reference rates are the FX source and a keyless public crypto price feed is the independent price source, each behind a provider interface); stablecoin par policy with depeg guard (|price − 1| > 2% disables par). Each attempt stores a `price_snapshot`.
 - **Deadlines:** per origin chain profile (e.g. Bitcoin 90 min, Ethereum 30 min, fast chains 20 min); always ≥ provider confirmation needs, bounded so payer refunds aren't locked for long, and **≤ the session's `expires_at`** (strict window, default) — routes whose minimum deadline exceeds the remaining window are hidden. Merchants may opt into `late_payments: allow`.
 
 ## 11. Agent payments architecture (summary — ADR-0009, flows §3 and §7)
@@ -280,12 +284,13 @@ flowchart LR
 
 - **Pre-transaction:** destination screening (on add, daily), payer origin/refund screening before any live quote, agent payer account screening at `/verify`, geo-policy at checkout (Cloudflare `CF-IPCountry`).
 - **Post-transaction:** sender addresses from observations re-screened; hits open cases, notify merchant, and can suspend new sessions — they cannot claw back funds (non-custodial), so preventive controls carry the weight.
-- **Failure policy (data, per jurisdiction):** default *fail-closed* for live attempts ≥ USD 1,000 equivalent when the screening vendor is unavailable; below that, *proceed + mandatory post-screen*.
-- **KYB:** vendor webhooks drive `KybCase`; `identity` reads KYB status via events to gate live mode.
+- **Failure policy (data, per jurisdiction):** default *fail-closed* for live attempts ≥ USD 1,000 equivalent when the screening provider is unavailable; below that, *proceed + mandatory post-screen*.
+- **Screening provider (v1, ADR-0020):** the local OFAC SDN digital-currency list + blocklist behind a vendor-neutral screening interface; a commercial vendor (Q-VEN-02) is a later provider behind the same interface.
+- **KYB (v1, ADR-0020):** the merchant self-declares minimum business details; an ops decision in the console (manual KYB decision endpoint) approves or rejects the `KybCase`; no KYB vendor, hosted flow or vendor webhook. `identity` reads KYB status via events to gate live mode.
 
 ## 14. Security (summary — `architecture/security.md`)
 
-Passkeys + step-up; hashed API keys with scopes; destination attestation and cool-off; checkout origin isolation (iframe, CSP, SRI, no third-party scripts except Turnstile and bundled wallet adapters); webhook HMAC + Ed25519 signatures; SSRF-safe egress proxy; OpenBao for secrets and PII encryption; signed images and SBOMs; hot keys are allowance-capped function-call keys; treasury is a hardware multisig; contracts immutable and audited; ops console behind Cloudflare Access with hardware keys; every admin action audited.
+Passkeys + step-up; hashed API keys with scopes; destination attestation and cool-off; checkout origin isolation (iframe, CSP, SRI, no third-party scripts except Turnstile and bundled wallet adapters); webhook HMAC + Ed25519 signatures; SSRF-safe egress proxy; OpenBao for secrets and PII encryption; signed images and SBOMs; hot keys are allowance-capped function-call keys; treasury is a hardware multisig; contracts immutable and audited (v1: independent AI-agent audits, human audit recommended before material value — ADR-0020); ops console behind Cloudflare Access with hardware keys; every admin action audited.
 
 ## 15. Deployment and infrastructure (summary — `architecture/infrastructure.md`)
 
@@ -327,7 +332,7 @@ Stateless tiers scale horizontally; Postgres is far from its limits at v1 target
 | 1Click status down | Progress updates slower | Tier-A successes still confirmed by watchers/indexer; refunds detected later via Explorer | Safe |
 | Explorer API down | None while hot poller covers active sessions | Unattended payments detected slower | Safe |
 | NEAR RPC provider down | None (multi-provider pool) | None | Safe |
-| Screening vendor down | ≥ USD 1k live attempts blocked | Larger payments paused | Safe |
+| Screening provider unavailable (v1: local list missing) | ≥ USD 1k live attempts blocked | Larger payments paused | Safe |
 | NearPay NUE site down | Checkout unavailable until failover (≤ 30 min) | API down; no events lost | **Safe — in-flight swaps complete on NEAR Intents; trackers catch up from the Explorer cursor** |
 | NATS down | None | Webhooks delayed; outbox buffers | Safe |
 | Email provider down | Receipts delayed (fallback provider) | Invoice emails delayed | Safe |
@@ -372,4 +377,5 @@ See `quality/risks.md`. Top three: **R-01** dependency on 1Click (no SLA, discre
 | 1.1 · LLD 1.2 | 2026-11-05 | Step 1.1 implemented (`nearpay-spec` 0.1.0, `nearpay-kit` 0.1.0, `nearpay-deploy` local stack). Doc changes from implementation: foundations 1.2 (consumer backoff via `nak` delays, auth claims and service-token default), platform 1.2 (nginx for static sites, same-origin `/api`, idempotent Postgres roles, image builds and contract, local secrets), payments 1.2 (statement API in Stage 1), webhooks/compliance/sentinel/identity/checkout 1.2 notes, domain model 1.1 (ID prefixes), landscape (mainnet Verifier observations), open questions OQ-T-01/02. |
 | 1.1 · LLD steps 1.2/1.3 | 2026-11-06 | Steps 1.2 (nine services) and 1.3 (clients) implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2. LLDs updated in place: identity 1.3, compliance 1.3, notify 1.2, rails 1.2, sentinel 1.3, payments 1.4, webhooks 1.3, agentpay 1.2, sandbox 1.2, checkout-and-js 1.3, dashboard-and-console 1.2, sdks-and-tools 1.2, platform 1.3 (local stand-in images), foundations 1.3 (DIP-4 `transfer` memo, not `mt_transfer`); domain model 1.2; SP-01, SP-14, SP-15 resolved; spec 0.1.5 change requests listed in `roadmap/open-questions.md`. |
 | 1.1 · LLD step 1.4 | 2026-11-07 | Step 1.4 integration done in test mode (traces T1–T7 and sandbox scenarios 00–07 green against the full Compose stack; mainnet demo is step 1.5). `@nearpay/spec` 0.1.5 implemented by producers and readers: foundations 1.4 (tolerant parsing), payments 1.5 (`PublicCheckoutSession.payment_intent`, session `sequence`, local Turnstile test secrets), agentpay 1.3 (`extra.deadline`, settle `replayed`, `sequence`), webhooks 1.4 (delivery log, open `enabled_events`, producer `sequence`), identity 1.4 (`GET /v1/auth/session`, attestation challenge re-issue), dashboard-and-console 1.3, checkout-and-js 1.4, sdks-and-tools 1.3, platform 1.4 (Compose follow-ups, `seed.sh live`, E2E suites, confirmed scenario outcomes); domain model 1.3 (`whd_`); CR-15-01/02/03/05/08/09/11/12/13 resolved. |
+| 1.1 · ADR-0020 | 2026-11-07 | Owner decisions for v1 by 2026-11-14 (ADR-0020): stages exit on green test-mode E2E with one v1 mainnet demo; self-declared KYB + ops decision, no KYB vendor (supersedes Q-VEN-01); local OFAC screening behind a vendor-neutral interface (defers Q-VEN-02); ECB FX + keyless public crypto price feed (Q-VEN-05 for v1); AI-agent vault audits; merges incl. money paths delegated to the lead agent. §3, §4, §5, §6, §10, §13, §14, §18 annotated; ADR-0017…0019 added to §4. |
 | 1.0 | 2026-11-05 | Stress-test pass 3 — capacity and product (§F–G): polling budget cut to ≈ 10 status calls/payment; **destination watchers with amount-tag attribution** (P1 for NEAR/EVM) make success detection provider-independent; gas-bounded batching and shard throughput bound for agent payments; manual tax rates in billing; vault partial-refund callback handling. All findings closed or tracked as owned risks/spikes. |
