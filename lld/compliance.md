@@ -1,6 +1,6 @@
 # LLD — `nearpay-compliance`
 
-> Version 1.5 (step 2.1 integration, spec 0.2.0: `createInternalCase` for payments' `reconciliation_diff` cases §5, operator-action events for the unified audit trail §5.1/§6, KYB field semantics §5) · Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
+> Version 1.6 (step 2.2 implementation: data §3 — migration `0002`, `ops_approvals` checks, `ops_actions`, `cases.payment_intent`, `blocklist` chain; screening provider port §4; `startKyb` no longer moves to `pending`, console approval needs a complete declaration §5; principal-scoped idempotency and operator guard §5.1; jobs §7; config §8) · Version 1.5 (step 2.1 integration, spec 0.2.0: `createInternalCase` for payments' `reconciliation_diff` cases §5, operator-action events for the unified audit trail §5.1/§6, KYB field semantics §5) · Version 1.4 (step 2.1 contracts: self-declared KYB without a vendor per ADR-0020 §3–4 — data §3, screening interface §4, API §5 and §5.1 console routes, events §6, configuration §8, privacy §9, stage map §12) · Version 1.3 (step 1.2 implementation findings folded: data §3, screening §4, KYB §5, list refresh §7, configuration §8, ops CLI §13) · Version 1.1 audited (`audits/compliance.md`) · HLD §13 · FR-CMP-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -65,8 +65,16 @@ create table ops_approvals (               -- step 2.1: two-person rule for acco
   status text not null check (status in ('pending','approved','rejected','expired')),
   requested_by uuid not null, requested_role text not null, requested_at timestamptz not null default now(),
   decided_by uuid, decided_role text, decided_at timestamptz, decision_note text, expires_at timestamptz not null,
-  check (decided_by is null or decided_by <> requested_by));   -- the database repeats the server-side rule
+  -- step 2.2: the database repeats the server-side rule for approvals only — a requester may still withdraw
+  -- (reject) their own request, which the v1.4 `decided_by <> requested_by` check would have forbidden
+  check (status <> 'approved' or (decided_by is not null and decided_by <> requested_by and decided_role = 'ops_admin')));
 create unique index ops_approvals_one_pending on ops_approvals (account_id) where status = 'pending';
+
+create table ops_actions (                 -- step 2.2: append-only log of every console write (INV-9); the same id is
+  id uuid primary key, actor_sub uuid not null, actor_role text not null,   -- published as ops_action.recorded
+  action text not null, target_type text not null, target_id text not null, account_id uuid, approval_id uuid,
+  note_enc bytea,                          -- reason/note, envelope-encrypted; never published
+  created_at timestamptz not null default now());
 
 create table account_flags (account_id uuid primary key, suspended boolean not null, reason text not null, actor text not null,
   version integer not null default 1, updated_at timestamptz not null default now());   -- suspension decisions
@@ -77,6 +85,7 @@ create table cases (
   subject jsonb not null, severity text not null check (severity in ('low','medium','high','critical')),
   status text not null check (status in ('open','investigating','closed')), resolution text,
   assignee uuid,                          -- step 2.1: operator working the case (console assign)
+  payment_intent text,                    -- step 2.2: `Execution.reference.payment_intent` of execution reviews (Review.payment_intent)
   created_at timestamptz not null default now(), closed_at timestamptz, version integer not null default 0);
 create table case_events (id uuid primary key, case_id uuid not null references cases(id), actor text not null,
   action text not null, note text, created_at timestamptz not null default now());
@@ -95,7 +104,8 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
   hit = blocklist(norm) or sanctions_entries(family(chain), norm) → block (reason 'sanctions' | 'blocklist')
   cached = latest screening for (type, chain, norm) with expires_at > now → return (cached=true)
   no sanctions list imported yet (sanctions_lists empty) → degraded, exactly like "provider unavailable" below (fail-safe)
-  provider (vendor-neutral interface, ADR-0020 §4): v1 has one live provider, `local` (the list + blocklist checks above; risk null);
+  provider (vendor-neutral interface, ADR-0020 §4; step 2.2: port `ScreeningProvider.check(db, subject) → {name, hits,
+    unavailable, risk}`, the fail policy stays in the pure decision): v1 has one live provider, `local` (the list + blocklist checks above; risk null);
     a later vendor is a second provider behind the same interface (risk API → severe/high block, medium review = allow + case,
     low allow) and needs no contract change. Screening responses name it in `provider` (`local` | `sandbox`)
   provider unavailable: amount_usd_micros >= policy.fail_closed_threshold → 503 screening_unavailable else allow (reason 'vendor_unavailable', post_screen_required)
@@ -108,7 +118,7 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 |---|---|---|
 | `POST /internal/screenings` | rails, identity, agentpay (`compliance.screen`) | above → `{screening_id, decision, risk, reasons, cached, post_screen_required}` |
 | `GET /internal/geo-policy` | payments (`compliance.read`) | `{blocked_countries, blocked_regions, version}` (payments caches; refreshes on `evt.compliance.policy.updated`) |
-| `POST /v1/account/kyb` | session owner (dashboard) | starts/returns KYB case → `KybCase` (`vendor_flow_url` is always null: no vendor flow, ADR-0020) |
+| `POST /v1/account/kyb` | session owner (dashboard) | creates/returns the KYB case → `KybCase` (`vendor_flow_url` is always null: no vendor flow, ADR-0020). Step 2.2: it no longer moves the case to `pending` (Stage 1 did) — `pending` means submitted, which needs `submitKyb` |
 | `GET /v1/account/kyb` (`getKyb`, step 2.1) | session owner/admin | → `KybCase` with `profile`, `editable`, `requested_info`, `submitted_at`, `decided_at` |
 | `PATCH /v1/account/kyb` (`updateKybProfile`) | session owner | partial `KybProfileUpdate` (null clears) → `KybCase`; only in `not_started`/`needs_info` (else `409 state_conflict`); creates the case if missing |
 | `POST /v1/account/kyb/submit` (`submitKyb`) | session owner, step-up | `{declaration: true}` → `pending`; every profile field but `website` required (`400 kyb_profile_incomplete`, `params.fields`); only from `not_started`/`needs_info`; emits `kyb.submitted` |
@@ -129,7 +139,7 @@ screen({subject_type, chain, subject, context, account_id, livemode, amount_usd_
 | `pending` · `approved` | ops `rejected` | — | `rejected` | event `kyb.rejected` (reverses live mode) |
 | `pending` · `approved` · `rejected` | ops `needs_info` (with `requested_info` in the console) | — | `needs_info` | event `kyb.needs_info` with `requested_info`; the merchant can edit again |
 
-The console's `decideOpsKybCase` approves only from `pending`; the Stage 1 manual endpoint above keeps its rules (any decision on an existing case, repeats are no-ops), so the CLI and testbed T1 keep working. `approved` means "ops reviewed the self-declared details", not third-party verification (identity §4).
+The console's `decideOpsKybCase` approves only from `pending` and only with a complete declaration (step 2.2: a Stage 1 case started without details can sit in `pending` with an empty profile → `409 state_conflict`; ask for information instead); the Stage 1 manual endpoint above keeps its rules (any decision on an existing case, repeats are no-ops), so the CLI and testbed T1 keep working. `approved` means "ops reviewed the self-declared details", not third-party verification (identity §4).
 
 **KYB field semantics (lead decision at step 2.1 integration, ADR-0020 decision 3).** The public field names `kyb_verified` (sentinel attestation, identity settlement context) and `verified_legal_name` (identity) stay as they are — renaming them would not be additive. Their meaning is: the legal name an owner self-declared and NearPay ops approved. No client may present them as identity verification; the UI copy is "Business details reviewed by NearPay" and never "verified identity" (checkout, dashboard, console, docs).
 
@@ -148,6 +158,8 @@ All `ops` visibility under `/ops/…`, idempotent writes, audited with the opera
 | `getOpsMerchantSuspension` | `GET /ops/merchants/{acct}/suspension` | `compliance.read` → `MerchantSuspension` with `pending_request` |
 | `createOpsSuspensionRequest` | `POST /ops/merchants/{acct}/suspension_requests` | `compliance.accounts.write`, step-up; `{action: suspend\|reinstate, reason}` → pending `OpsApproval` (24 h); emits `account.action_requested` |
 | `approveOpsSuspensionRequest` · `rejectOpsSuspensionRequest` | `POST …/suspension_requests/{opa}/approve` · `/reject` | **ops_admin**; approve needs step-up and executes: `account_flags` + `account.suspended`/`reinstated` in the same transaction |
+
+**Principals without an account (step 2.2).** The service bootstrap's automatic idempotency is scoped to `principal.acct`; console writes and `createInternalCase` have none, so compliance scopes their `Idempotency-Key`s to the principal (`ops:<sub>` / `service:<sub>`, a deterministic pseudo-account uuid in `idempotency_keys`, same replay/conflict rules and retention). Every console handler also re-checks the operator from the route (`ptype=ops`, `usr_` sub, `ops_role` ∈ `opsRoles`, fresh step-up on step-up routes) on top of the kit. The ops-action envelope `aggregate.id` is `aud_<action uuid>` (the outbox keys aggregates by prefixed id; `ops_action` has no prefix — same as sentinel and rails); `object.id` stays the uuid.
 
 **Two-person rule (server-side, never trusted from the client):** the approver's operator id (`sub` of the verified ops token) must differ from `requested_by`, and the approver must hold `ops_admin` (`403 approver_conflict`); both need a fresh step-up; one pending request per account; an action that no longer matches the account state at approval expires the request (`409 state_conflict`). The `ops_approvals` check constraint repeats the different-approver rule. The ops CLI's `account-suspend`/`account-reinstate` remain for local and test stacks; when `NP_ENV=server` they refuse with `two_person_required`.
 
@@ -184,10 +196,12 @@ One open case per kind and subject; destination blocks open `screening_hit` case
 | `sanctions.refresh` | on first start and daily 03:00 UTC | download the OFAC SDN advanced XML (follows the 302 to a signed S3 URL; ~128 MB, streamed) → extract every "Digital Currency Address - <CODE>" feature (feature type ids are read from the document, not hard-coded; SP-15) → replace the list in one transaction (diff logged, `sanctions_lists` row); an empty result is refused; a failed download keeps the previous list; alert after 48 h stale. Offline: `ops.js sanctions-import -` reads the file from stdin |
 | `destinations.rescreen` | daily | screen every `monitored_destinations.active`; block → `destination.blocked` + case |
 | `purge.screenings` | daily | delete expired cache rows older than retention of the decision |
+| `ops_approvals.expire` (step 2.2) | every 15 min | pending two-person requests past `expires_at` → `expired` (requests and approvals also expire due rows of their account inline) |
+| `destinations.rescreen` (console) | on `createOpsRescreen` | same job with payload `{account_id}`; dedupe key `destinations.rescreen:ops:<uuid>` |
 
 ## 8. Configuration
 
-`NP_SANCTIONS_SOURCE_URL` (default `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML`, SP-15; `file:` for air-gapped machines), `NP_SANCTIONS_REFRESH` (default `true`; offline stacks set `false` and import with the ops CLI), `NP_SANCTIONS_TIMEOUT_MS` (300000), `NP_OPS_ACTOR` (default actor recorded by the ops CLI; `--actor` overrides, else `cli@<hostname>`), `NP_SCREENING_PROVIDER` (`local`, the only v1 value; ADR-0020 §4 — replaces `NP_SCREENING_VENDOR`; no vendor key file), `NP_OPS_APPROVAL_TTL_SECONDS` (86400). No KYB vendor settings in v1 (`NP_KYB_VENDOR*`, `NP_KYB_WEBHOOK_SECRET_FILE` removed).
+`NP_SANCTIONS_SOURCE_URL` (default `https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ADVANCED.XML`, SP-15; `file:` for air-gapped machines), `NP_SANCTIONS_REFRESH` (default `true`; offline stacks set `false` and import with the ops CLI), `NP_SANCTIONS_TIMEOUT_MS` (300000), `NP_OPS_ACTOR` (default actor recorded by the ops CLI; `--actor` overrides, else `cli@<hostname>`), `NP_SCREENING_PROVIDER` (`local`, the only v1 value; ADR-0020 §4 — replaces `NP_SCREENING_VENDOR`; no vendor key file; step 2.2: `NP_SCREENING_VENDOR=none` and `NP_KYB_VENDOR=manual` are still accepted so older Compose files boot), `NP_OPS_APPROVAL_TTL_SECONDS` (86400). No KYB vendor settings in v1 (`NP_KYB_VENDOR*`, `NP_KYB_WEBHOOK_SECRET_FILE` removed).
 
 ## 9. Security and privacy
 
