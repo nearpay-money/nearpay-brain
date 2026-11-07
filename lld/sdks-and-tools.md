@@ -1,6 +1,6 @@
 # LLD — SDKs and tools (`nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site`)
 
-> Version 1.4 (step 2.3, spec 0.2.0: full node SDK — Stage 2 resources, per-route retry policy, tolerant parsing, auto-pagination, refund signers, rotation overlap §1) · Version 1.3 (step 1.4, spec 0.1.5: node delivery log binding §1; agentkit `extra.deadline`, `replayed` and tolerant parsing §2) · Version 1.2 (step 1.3 implementation findings folded into §1, §2, §6) · Version 1.1 audited (`audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
+> Version 1.5 (step 2.3, site: custom Astro docs instead of Starlight for the strict CSP, build-time reference/error pages, reference scope, marketing first version §4–§5) · Version 1.4 (step 2.3, spec 0.2.0: full node SDK — Stage 2 resources, per-route retry policy, tolerant parsing, auto-pagination, refund signers, rotation overlap §1) · Version 1.3 (step 1.4, spec 0.1.5: node delivery log binding §1; agentkit `extra.deadline`, `replayed` and tolerant parsing §2) · Version 1.2 (step 1.3 implementation findings folded into §1, §2, §6) · Version 1.1 audited (`audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
 
 ## 1. `@nearpay/node` (Stage 1 subset, full in Stage 2)
 
@@ -40,11 +40,21 @@ Commands: `login` (device code via dashboard session → restricted test key sto
 
 One Astro project (ADR-0019) builds both public sites: `dist/docs` → `docs.<domain>`, `dist/web` → apex domain.
 
-Astro Starlight site: guides (quickstart, checkout, webhooks, test mode, refunds, agents/x402, settlement destinations), API reference rendered from `nearpay-spec/openapi/public.yaml`, error pages generated from the error catalogue, webhook IP list, changelog. Built statically; deployed with the stack.
+Guides (quickstart, checkout hosted/embedded/payment links, payment intents + list filters, refunds, customers, settlement destinations, webhooks, test mode, agents/x402), API reference rendered from `nearpay-spec/openapi/public.yaml`, error pages generated from the error catalogue, webhook IP list, changelog. Built statically; deployed with the stack.
 
-## 5. `nearpay-site` — marketing (Stage 5)
+**Step 2.3 decisions (implemented):**
+- **No Starlight.** Starlight injects an inline theme script and Pagefind needs `wasm-unsafe-eval`, both incompatible with the strict CSP (`default-src 'none'; script-src 'self'; style-src 'self'`), and its styling would fight the `@nearpay-internal/ui` tokens. The docs use a small custom Astro layout on the kit's tokens, DM Sans and component CSS. Code blocks use Prism (class-based tokens; Shiki writes `style=""`). Astro never inlines CSS or scripts (`inlineStylesheets: never`, `assetsInlineLimit: 0`); `scripts/check-dist.mjs` fails the build on any inline script/style, style attribute, inline handler or third-party asset.
+- **Two builds, one project:** `NP_SITE=web|docs` selects `src/routes/<site>/`, injected with `injectRoute` (no `src/pages`). Docs are served at the root of `docs.<domain>` so catalogue `doc_url`s (`/errors/<code>`) resolve.
+- **Generated pages are rendered at build time** from the installed `@nearpay/spec` (`src/lib/spec.ts`): nothing generated is committed, so nothing can be hand-edited. `check-dist` asserts one page per catalogue code and that every public developer route appears in the reference.
+- **Reference scope:** routes whose `x-nearpay.auth` includes a non-session credential (secret/restricted key, client secret, anonymous), except `/v1/auth/*`. Dashboard-session-only routes (account, team, API keys, settlement-destination changes, refund recipient override) are the dashboard's API and are not listed. Spec 0.2.0: 62 routes in 15 presentation groups (resource names; grouping and intros are presentation only).
+- Event types page from `WEBHOOK_TYPES`; per-error "What to do" advice is hand-written (`error-notes.ts`), facts come from the catalogue. Search: a static `/search-index.json` (guides, groups, operations, error codes) and a 1.5 KB gz external script (also copy buttons); every page works without JavaScript (nested attributes and mobile navigation use `<details>`).
+- **Webhook IP list:** not published yet (no production egress IPs); the webhooks guide says so and recommends signature verification.
+
+## 5. `nearpay-site` — marketing (Stage 5; first version step 2.3)
 
 Astro static marketing site at `nearpay.money`: product, pricing (from fee schedule doc), legal pages (terms incl. 1Click flow-down provisions, privacy), status link.
+
+**Step 2.3 (implemented ahead of Stage 5):** home from the Figma marketing frames (desktop and mobile copy variants as drawn), Payments, Billing ("coming next"), Pricing, Support, Privacy and Terms. No JavaScript (the mobile menu is a `<details>` disclosure). Pricing renders the Q-BIZ-02 default schedule and the Q-BIZ-04 default fee bearer, badged **indicative** until Q-BIZ-02 is answered. Privacy and Terms are **drafts, not in force**, pending Q-LEG-01; they state non-custody and self-declared, ops-reviewed business details (ADR-0020). Support links to docs, the error reference and the dashboard's Help & support (no support mailbox exists yet). The hero's illustrative checkout keeps the Figma numbers (USD 49.00 + 0.49 fee = 1 %), captioned "fees vary by payment"; under Q-BIZ-02 a USDC → USDC payment is `same_asset` (0.20 %), so the owner may want the figure aligned.
 
 ## 6. Tests
 
