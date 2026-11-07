@@ -1,6 +1,6 @@
 # Public API and Webhook Conventions
 
-> Version 1.1 (list filters instead of search endpoints, ADR-0018) · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
+> Version 1.2 (step 2.1, spec 0.2.0: `refund.pending` in the event catalogue §9) · Version 1.1 (list filters instead of search endpoints, ADR-0018) · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
 
 ## 1. Surfaces
 
@@ -107,7 +107,7 @@ The sandbox also exposes `POST /v1/test_helpers/executions/{id}/advance` for ste
 |---|---|
 | Checkout | `checkout.session.completed`, `checkout.session.expired` |
 | Payments | `payment_intent.created`, `.processing`, `.succeeded`, `.payment_failed`, `.requires_review`, `.overpaid`, `.canceled` |
-| Refunds | `refund.created`, `refund.requires_action`, `refund.succeeded`, `refund.failed`, `refund.canceled` |
+| Refunds | `refund.created`, `refund.requires_action`, `refund.pending`, `refund.succeeded`, `refund.failed`, `refund.canceled` |
 | Billing | `invoice.created`, `.finalized`, `.paid`, `.payment_failed`, `.overdue`, `.voided`, `.marked_uncollectible`; `customer.subscription.created`, `.updated`, `.deleted`, `.renewal_upcoming`; `mandate.activated`, `.collected`, `.insufficient_funds`, `.canceled`, `.exhausted` |
 | Agent | `agent_payment.settled`, `agent_payment.failed` |
 | Account | `account.updated`, `settlement_destination.pending`, `.activated`, `.disabled`, `review.opened`, `review.closed` |

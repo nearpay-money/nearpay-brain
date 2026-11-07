@@ -1,6 +1,6 @@
 # LLD — `nearpay-sentinel`
 
-> Version 1.4 (mainnet findings 2026-11-07: R1 normalisation, R2 waiting-time echo, R4 deadline semantics; sentinel #2/#3) · Version 1.3 (step 1.2 implementation findings folded: data §4, R4/R5/R6 and classes §5, audit §8.1, cache §8, configuration §10, ops CLI §15) · Version 1.1 audited (`audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
+> Version 1.6 (step 2.1 integration, spec 0.2.0: operator-action events for the unified audit trail §6/§7; payments consumes the kill switch, which blocks live refund legs and relays §7) · Version 1.5 (step 2.1 contracts: two-person kill-switch release and console routes §6, data §4, stage map §14) · Version 1.4 (mainnet findings 2026-11-07: R1 normalisation, R2 waiting-time echo, R4 deadline semantics; sentinel #2/#3) · Version 1.3 (step 1.2 implementation findings folded: data §4, R4/R5/R6 and classes §5, audit §8.1, cache §8, configuration §10, ops CLI §15) · Version 1.1 audited (`audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -53,6 +53,15 @@ create table kill_switch (id smallint primary key check (id = 1), engaged boolea
   actor text not null, version integer not null, updated_at timestamptz not null default now());   -- singleton (`ks_` id, spec 0.1.4); version orders events
 create table kill_switch_log (id uuid primary key, engaged boolean not null, reason text not null, actor text not null,
   version integer not null, created_at timestamptz not null default now());   -- append-only (trigger)
+
+create table release_requests (              -- step 2.1: two-person release (`OpsApproval`, opa_)
+  id uuid primary key, reason text not null, status text not null check (status in ('pending','approved','rejected','expired')),
+  requested_by uuid not null, requested_role text not null, requested_at timestamptz not null default now(),
+  decided_by uuid, decided_role text, decided_at timestamptz, decision_note text, expires_at timestamptz not null,
+  switch_version integer not null,           -- version of the engaged switch the request is for
+  check (decided_by is null or decided_by <> requested_by));
+create unique index release_one_pending on release_requests ((true)) where status = 'pending';
+-- audit_findings gains acknowledgement_note text (console acknowledge)
 ```
 
 ## 5. Co-signing rules
@@ -106,13 +115,32 @@ No attacker-controllable input can engage the global kill switch; a compromised 
 | `POST /v1/attestations/deposit_instructions` | anonymous (gateway per-IP limit) | `200` signed attestation (cached per `deposit_key` until `expires_at`) | `400 invalid_request`, `401 ticket_invalid`, `409 attestation_refused`, `409 attestation_stale`, `429 rate_limited`, `503 attestation_unavailable` |
 | `GET /v1/attestations/keys` | anonymous | `{keys:[{kid, public_key, not_after}]}` (current key + `NP_SENTINEL_ANNOUNCED_KEYS`; informational; checkout and agent-signer use pinned keys and never fetch this) | |
 | `POST /internal/kill-switch` | ops (`sentinel.killswitch`) | `{engaged, reason}` → state | |
-| `GET /internal/findings` | ops | findings list (HTTP shape specified with the Stage 2 console, OQ-T-02; Stage 1 reads findings through the ops CLI) | |
+| `GET /internal/findings` | ops | superseded by the console routes below (step 2.1); Stage 1 reads findings through the ops CLI | |
+
+**Console routes (step 2.1, spec `OPS_ROUTES`, service `sentinel`, visibility `ops`, `/ops/…`):**
+
+| operationId | Method & path | Scope · roles | Notes |
+|---|---|---|---|
+| `getOpsKillSwitch` | `GET /ops/kill_switch` | `sentinel.read` · ops, ops_admin | `OpsKillSwitch` = state + `version` + `pending_release` |
+| `engageOpsKillSwitch` | `POST /ops/kill_switch/engage` | `sentinel.killswitch` · ops, ops_admin | one operator, no step-up (an emergency is never delayed); engaging an engaged switch is a no-op; a pending release request expires |
+| `requestOpsKillSwitchRelease` | `POST /ops/kill_switch/release_requests` | `sentinel.killswitch` · ops, ops_admin, step-up | only while engaged, one pending at a time (`409 state_conflict`), expires after 1 h; emits `evt.sentinel.kill_switch.release_requested` (notify pages security contacts) |
+| `approveOpsKillSwitchRelease` | `POST /ops/kill_switch/release_requests/{opa}/approve` | `sentinel.killswitch` · **ops_admin**, step-up | the second operator; releases in the same transaction (switch row version + 1, log row with actor `<requester>+<approver>`, outbox `released`) |
+| `rejectOpsKillSwitchRelease` | `POST /ops/kill_switch/release_requests/{opa}/reject` | `sentinel.killswitch` · **ops_admin** | rejects or (by the requester) withdraws; executes nothing |
+| `listOpsKillSwitchLog` | `GET /ops/kill_switch/log` | `sentinel.read` | newest first, `before_version` cursor |
+| `listOpsFindings` · `getOpsFinding` | `GET /ops/findings` · `/{fnd}` | `sentinel.read` | default: non-pass, unacknowledged; filters result, acknowledged, account, execution, livemode, created |
+| `acknowledgeOpsFinding` | `POST /ops/findings/{fnd}/acknowledge` | `sentinel.findings.write` | `{note}`; the compliance case is worked separately |
+
+**Two-person release contract (server-side):** the approver is an `ops_admin` whose operator id (`sub` of the verified ops token, never a client field) differs from the requester's, else `403 approver_conflict`; requester and approver both hold a fresh step-up; the request must be `pending`, unexpired and for the current engaged `version` (an engage or release in between expires it, `409 state_conflict`); the table's check constraint repeats the different-operator rule. `POST /internal/kill-switch` (ops CLI) keeps engage; its single-person release answers `409 two_person_required` when `NP_ENV=server` and stays available on local/test stacks (testbed T7).
+
+**Unified console audit trail (T-12, lead decision at step 2.1 integration).** Every console write sentinel executes (engage, release request/approve/reject, finding acknowledge) also publishes `evt.sentinel.ops_action.recorded` (`OpsActionEvent`: action id, `actor {sub, ops_role}`, `action` such as `kill_switch.engaged` / `kill_switch.release_approved` / `finding.acknowledged`, `target {type, id}`, `account_id`, `approval`, `occurred_at`; ids only) through the outbox in the same transaction. identity consumes it into `audit_events` so the console audit log is one trail; `kill_switch_log` and `ops_approvals` stay the detail source. The ops CLI's engage/release publish the same event with the CLI actor.
 
 ## 7. Events
 
 | Produced | Consumers |
 |---|---|
-| `evt.sentinel.kill_switch.engaged` · `.released` | rails (stores flag `quoting_enabled`), notify (page/email security contacts) |
+| `evt.sentinel.kill_switch.engaged` · `.released` | rails (stores flag `quoting_enabled`), agentpay (refuses live settles, checkout relays and, from Stage 2, refund relays), payments (Stage 2: no new live refund legs, payments §17 item 16), notify (page/email security contacts) |
+| `evt.sentinel.ops_action.recorded` (step 2.1 integration, `OpsActionEvent`) | identity (`audit_events`: one console audit trail, §6) |
+| `evt.sentinel.kill_switch.release_requested` (step 2.1, `OpsApproval`) | notify (security contacts: a second operator is needed) |
 | `evt.sentinel.audit_finding.created` (result ≠ pass) | compliance (opens case), notify |
 
 | Consumed | Handler |
@@ -166,7 +194,7 @@ Non-pass findings emit `evt.sentinel.audit_finding.created`.
 
 ## 14. Stage mapping
 
-Stage 1: everything above except two-person kill-switch release (Stage 2 console) — Stage 1 release via ops CLI with audit log.
+Stage 1: everything above except two-person kill-switch release (Stage 2 console) — Stage 1 release via ops CLI with audit log. Stage 2: console routes and the two-person release (§6); the single-person CLI release is refused on the server stage.
 
 ## 15. Ops CLI (Stage 1)
 

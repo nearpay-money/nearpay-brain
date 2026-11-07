@@ -1,6 +1,6 @@
 # LLD — `nearpay-sandbox`
 
-> Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
+> Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -23,6 +23,12 @@ Deterministic simulator for test mode, local development and E2E: a **1Click-com
 | `POST /sim/advance` | — | `{deposit_address, to: deposit\|processing\|success\|refund\|fail}` step control |
 | `POST /sim/intents/simulate` · `/execute` | `simulate_intents` / `execute_intents` | real NEP-413 / ERC-191 / raw Ed25519 signature verification (`@nearpay-internal/intents`), nonces, simulated balances per account (seeded via `/sim/intents/fund`), mainnet rejection messages, atomic batches; named accounts register the first key that signs for them. Emits DIP-4 / NEP-245 events shaped like mainnet: the binding memo of a transfer intent is on the DIP-4 `transfer` event only, the NEP-245 `mt_transfer` carries none (SP-14) |
 | `GET /sim/intents/events?cursor=` | indexer feed | event stream for rails' sandbox indexer adapter |
+| `POST /sim/intents/transfers` (Stage 2) | — | `{from, to, token, amount, memo?}`: an executed transfer without a signature (credits `from` with any shortfall first, then emits the same DIP-4 `transfer` + NEP-245 `mt_transfer` events as a signed execute). Used by payments' refund test helper for Intents legs; test mode only by construction |
+| `GET /api/v0/transactions` (Stage 2) | Explorer `/api/v0/transactions` | `ExplorerTransactionsQuery` → `ExplorerTransactionList`: the sandbox's quotes as Explorer rows, newest first, with the scenario's current status; filters `referral`, `statuses` (default without `*_DEPOSIT`, like the Explorer), `startTimestamp`/`endTimestamp` (exclusive, on creation time), `numberOfTransactions` ≤ 1000 and the `lastDepositAddress`/`lastDepositMemo` cursor; `amountIn`/`amountOut` read `0` until settled; no rate limit. Lets rails run its Explorer feed in test mode (rails §8.5) |
+
+**Quote fields (Stage 2):** `SandboxQuoteRequest.scenario_group` (rails sets `pi_…` for payment attempts — from `CreateExecution.reference` — and `re_…` for refund legs) and `scenario_kind` (`payment` | `refund`). For refund legs rails sets `scenario_amount` to the refund amount (source base units), so a merchant picks a refund scenario with the amount's last two digits.
+
+**Live 1Click shape (spec 0.2.0):** the `OneClick*` schemas accept `null` for unset optional fields and a status-nested `quoteResponse` without `correlationId` (`OneClickStatusQuoteResponse`). The sandbox serves the live shape: unset optionals as `null` (e.g. `swapDetails.amountOut` before settlement, `appFees[].limitOrderId`), and `GET /v0/status` nests the quote response without `correlationId` and its `quoteRequest` without `quoteWaitingTimeMs`, so adapters are tested against what mainnet sends (`roadmap/open-questions.md`, mainnet findings).
 
 ## 4. Scenario engine
 
@@ -36,7 +42,7 @@ Scenario key = last two digits of `scenario_amount` (the fiat amount in minor un
 | `03` | `SUCCESS` with `refundedAmount` = excess |
 | `04` | `FAILED` after `PROCESSING` |
 | `05` | `SUCCESS` but `/sim/chains` returns amount − 1 (short) |
-| `06` | like `00`; a deposit also pays the older open quotes of the same payment (duplicate settlement → overpayment) |
+| `06` | like `00`; a deposit also pays the older open quotes of the same payment (duplicate settlement → overpayment). Stage 2: quotes are grouped by `scenario_group` when present; on refund legs a deposit to one leg also settles the other open legs of the same refund (duplicate refund → payments records a `duplicate` leg). Without `scenario_group` the Stage 1 grouping applies |
 | `07` | success arrives 5 min after the session's `expires_at` |
 | refund address contains `sanctioned` | compliance blocks (handled by compliance sandbox rule) |
 
@@ -54,7 +60,7 @@ Schema parity: sandbox request/response validated against the same zod schemas a
 
 ## 8. Stage mapping
 
-Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (Stage 2).
+Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (Stage 2). Stage 2: `scenario_group` / `scenario_kind` on quotes, `06` for refund legs, `POST /sim/intents/transfers`; refund legs quote `EXACT_INPUT` (amountOut = `floor(amountIn × price ratio × (1 − 20 bps))`) and `EXACT_OUTPUT` like payments, with no app fee; the payer side of a refund settles on `/sim/chains` (route legs) or the simulated Verifier (Intents legs) so rails verifies payer-side evidence; the Explorer mirror (`GET /api/v0/transactions`) and the live 1Click body shape.
 
 ## 9. Ops CLI
 

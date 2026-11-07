@@ -1,10 +1,10 @@
 # LLD — `nearpay-identity`
 
-> Version 1.4 (step 1.4, spec 0.1.5: `GET /v1/auth/session` and `POST /v1/settlement_destinations/{id}/challenge` §6, `challenge` command §5, `attestation_challenges.superseded_at` §4) · Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
+> Version 1.6 (step 2.1 integration, spec 0.2.0: unified console audit trail — identity consumes `evt.compliance.ops_action.recorded` / `evt.sentinel.ops_action.recorded` into `audit_events` §6.1/§7; `kyb_verified` / `verified_legal_name` keep their names, meaning "self-declared, ops-approved" §4) · Version 1.5 (step 2.1 contracts: team, invitations, multi-account sessions, recovery, restricted keys, two-approver rule, audit export, console sessions and console routes, self-declared KYB semantics per ADR-0020 — §1, §4, §5, §6, §6.1, §7, §8.1, §11, §12, §16, §17) · Version 1.4 (step 1.4, spec 0.1.5: `GET /v1/auth/session` and `POST /v1/settlement_destinations/{id}/challenge` §6, `challenge` command §5, `attestation_challenges.superseded_at` §4) · Version 1.3 (step 1.2 implementation findings folded: sessions and sign-up §4/§6, authz §8.1, jobs §9, configuration §11, ops CLI §17) · Version 1.1 audited (`audits/identity.md`) · HLD §5.1, ADR-0005, ADR-0014 · Foundations: `00-foundations.md`
 
 ## 1. Scope
 
-**Owns:** accounts, users, memberships/roles, dashboard sessions (passkeys, step-up, recovery), API keys, settlement destinations (attestation, approvals, cool-off, defaults), fee schedules, gateway authorisation (`/internal/authz`), internal JWT/JWKS, service tokens, account audit log.
+**Owns:** accounts, users, memberships/roles, dashboard sessions (passkeys, step-up, recovery), API keys (secret, publishable, restricted), settlement destinations (attestation, approvals, cool-off, defaults), fee schedules, gateway authorisation (`/internal/authz`), internal JWT/JWKS, service tokens, account audit log; from step 2.1 also invitations, console operators and console sessions, and the console's merchant and audit-log reads (§6.1).
 **Does not own:** KYB decisions (compliance), screening (compliance), destination minimum amounts (rails computes; identity displays), checkout client secrets (payments validates).
 
 ## 2. Runtime
@@ -45,6 +45,8 @@ create table accounts (
   api_version text not null,                        -- pinned at creation, e.g. '2026-11-01'
   settings jsonb not null default '{}',             -- late_payments, underpay_tolerance_bps, branding, session_ttl_default
   recovered_at timestamptz,                         -- last account recovery; blocks destination changes 48 h
+  -- verified_legal_name: set from the KYB profile when compliance approves (step 2.1, getInternalKybCase); it is the
+  -- ops-approved, self-declared legal name (ADR-0020), not a third-party-verified identity
   created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   version integer not null default 0);
 
@@ -61,7 +63,9 @@ create table memberships (
 create table passkeys (
   id uuid primary key, user_id uuid not null references users(id), credential_id bytea not null unique,
   public_key bytea not null, sign_count bigint not null, transports text[] not null default '{}',
-  aaguid uuid, name text not null, created_at timestamptz not null default now(), last_used_at timestamptz);
+  aaguid uuid, name text not null, created_at timestamptz not null default now(), last_used_at timestamptz,
+  kind text not null default 'dashboard' check (kind in ('dashboard','ops')));   -- step 2.1: ops = hardware key registered
+  -- through operator enrolment (attestation verified, AAGUID on NP_OPS_AAGUID_ALLOWLIST); only ops passkeys sign in to the console
 
 create table sessions (
   id uuid primary key, kind text not null default 'dashboard' check (kind in ('dashboard','ops')),
@@ -75,8 +79,18 @@ create table sessions (
 create index sessions_user on sessions (user_id) where revoked_at is null;
 
 create table magic_links (
-  token_hash bytea primary key, email citext not null, purpose text not null check (purpose in ('signup','recovery','invite')),
-  account_id uuid, role text, expires_at timestamptz not null, used_at timestamptz);
+  token_hash bytea primary key, email citext not null, purpose text not null check (purpose in ('signup','recovery','invite','ops_enrol')),
+  account_id uuid, role text, expires_at timestamptz not null, used_at timestamptz,
+  invitation_id uuid);                              -- step 2.1: invite links (7 days); ops_enrol links (24 h, role = ops role)
+
+create table invitations (                          -- step 2.1 (inv_)
+  id uuid primary key, account_id uuid not null references accounts(id), email citext not null,
+  role text not null check (role in ('owner','admin','developer','finance','support','viewer')),
+  status text not null check (status in ('pending','accepted','revoked','expired')),
+  invited_by uuid not null, expires_at timestamptz not null, accepted_at timestamptz, accepted_by uuid,
+  created_at timestamptz not null default now());
+create unique index invitations_one_pending on invitations (account_id, email) where status = 'pending';
+-- memberships gain last_used_at timestamptz (sign-in picks the most recently used account; switchSessionAccount sets it)
 
 create table registration_tokens (                  -- verified email → passkey registration (5 min, single use)
   token_hash bytea primary key, email citext not null, user_handle bytea not null,  -- WebAuthn user.id of the future user
@@ -157,6 +171,8 @@ create table audit_events (
   created_at timestamptz not null default now());
 create index audit_account on audit_events (account_id, created_at desc);
 
+-- step 2.1: `kyb_verified` below means "legal name approved by NearPay ops from self-declared details" (ADR-0020 §3). Clients
+-- must not present it (or verified_legal_name) as third-party verification: the checkout shows "Business details reviewed by NearPay".
 create view sentinel_destination_registry as        -- granted SELECT to role sentinel_ro only (v2, migration 0002)
   select d.id, d.account_id, d.livemode, d.asset_id, d.type, d.chain, d.address_norm, d.status, d.active_at,
          coalesce(a.verified_legal_name, a.display_name) as merchant_name, a.verified_legal_name is not null as kyb_verified,
@@ -185,7 +201,13 @@ Migration note: `account_default_destinations` uses a generated column `coalesce
 | `cooling_off` | job `destination.activate` at `active_at` | not disabled; re-screen `allow` | `active` | event `activated`; if first destination for the asset → set default |
 | any non-`disabled` | `disable` (owner/admin, step-up) or `compliance.destination.blocked` | — | `disabled` | if default → unset default; event `disabled`; notify |
 
-**Account live mode:** `live_enabled = (kyb_status = 'approved') and exists(active live destination) and status = 'active'`; recomputed on every relevant event; change emits `identity.account.updated`.
+**Account live mode:** `live_enabled = (kyb_status = 'approved') and exists(active live destination) and status = 'active'`; recomputed on every relevant event; change emits `identity.account.updated`. From step 2.1 `kyb_status` follows the compliance events including `kyb.submitted` (`pending`); `approved` comes only from an ops decision on self-declared details (ADR-0020); on `kyb.approved` identity reads the case (`GET /internal/kyb_cases/{acct}`, `compliance.read`) and copies `legal_name` → `verified_legal_name` and `country_of_incorporation` → `country`.
+
+**Two-approver rule (step 2.1).** `approvals_required` is fixed at creation: `2` when the account has ≥ 2 owner/admin members, else `1` (the creator's own creation counts). `POST /v1/settlement_destinations/{id}/approve` is checked server-side on the session's user id: with `2` required the approver must differ from the creator and from earlier approvers (`403 approver_conflict`); approvals are rows of `destination_approvals` (primary key `(destination_id, user_id)` repeats the rule); a `reject` disables the destination (`disabled_reason: merchant`). Creating a destination that needs a second approval emits `settlement_destination.pending_approval` (notify asks the other owners/admins). The public object shows `approval {required, approved_by, rejected_by}`.
+
+**Invitation** (step 2.1): `pending` → `accepted` (verifyMagicLink + passkey registration for a new user, or `acceptInvitation` by the signed-in user whose email matches; emits `member.added`) · `revoked` (owner/admin) · `expired` (7 days, job `purge.auth` marks it). One pending invitation per (account, email) (`409 member_exists`, also when already a member). Only owners invite, promote or remove owners; the last owner can be neither demoted nor removed (`409 last_owner`). Removing a member revokes their sessions for that account at once (cache purge as for logout).
+
+**Recovery** (step 2.1): `POST /v1/auth/recovery` → magic link (`purpose: recovery`) → `verifyMagicLink` (`Registration.purpose = recovery`) → passkey registration adds a passkey to the existing user (existing passkeys stay) and creates a session; every account the user owns gets `recovered_at = now()` (48 h destination lock) and all its owners are notified (`security.member_changed`-style recovery notice, audit `user.recovered`).
 
 ## 6. API
 
@@ -203,9 +225,14 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `POST /v1/auth/logout` | session | `204` | — | — |
 | `GET /v1/account` · `PATCH /v1/account` | session (PATCH: owner/admin) | account object (settings whitelist) | `invalid_setting` | yes |
 | `GET /v1/account/requirements` | session | `{live_enabled, missing:['kyb','destination']}` | — | — |
-| `GET /v1/account/members` · `POST` invite · `DELETE /{user}` | session owner/admin (+step-up for POST/DELETE) | members / invitation | `last_owner` | yes |
+| `GET /v1/account/members` · `PATCH /{user}` · `DELETE /{user}` (`listMembers`, `updateMember`, `removeMember`, step 2.1) | session owner/admin (+step-up for PATCH/DELETE) | `Member {user{id,email}, role, created, last_login_at}` | `last_owner` | yes |
+| `GET` · `POST /v1/account/invitations` · `DELETE /{inv}` (`listInvitations`, `createInvitation`, `revokeInvitation`) | session owner/admin (+step-up for POST) | `{email, role}` → `Invitation`; the link is mailed through notify `team.invitation` (token only in the link fragment) | `member_exists`, `state_conflict` | yes |
+| `POST /v1/auth/invitations/accept` (`acceptInvitation`) | session (the invited user) | `{token}` → `DashboardSession` re-issued for the joined account | `invitation_invalid` | — |
+| `GET /v1/auth/accounts` · `POST /v1/auth/session/account` (`listMemberships`, `switchSessionAccount`) | session | memberships / `{account}` → `DashboardSession` for that account (step-up cleared) | — | — |
+| `PATCH /v1/api_keys/{id}` (`updateApiKey`) | session developer+ & step-up | `{name?, scopes?, ip_allowlist?}`; `scopes` only for restricted keys | `scope_unknown`, `state_conflict` | yes |
+| `GET /v1/account/audit_events` (`listAccountAuditEvents`) | session owner/admin | cursor list of `AuditEvent` (`aud_`), filters `created[…]`, `action`, `actor`; the dashboard's audit export walks it and writes CSV client-side (no server-side file export; the platform's daily object-storage export is an ops job) | — | — |
 | `GET /v1/api_keys` | session developer+ | list (no secrets) | — | — |
-| `POST /v1/api_keys` | session developer+ & step-up | `{type, livemode, name, scopes?, ip_allowlist?, expires_at?}` → key **with secret once** | `scope_unknown` | yes |
+| `POST /v1/api_keys` | session developer+ & step-up | `{type, livemode, name, scopes?, ip_allowlist?, expires_at?}` → key **with secret once**; step 2.1: `type: restricted` (`rk_live_`/`rk_test_`) needs ≥ 1 scope from the catalogue below (`<resource>.read\|write`, write implies read), other types refuse `scopes` | `scope_unknown` | yes |
 | `POST /v1/api_keys/{id}/roll` | session developer+ & step-up | `{expire_old_in_seconds ≤ 7 d}` → new key | — | yes |
 | `DELETE /v1/api_keys/{id}` | session developer+ & step-up | `204` | — | — |
 | `GET /v1/settlement_destinations` | session any role; secret key read-only (`destinations.read`) | list incl. `min_payment_amount` (from rails, cached 1 h) | — | — |
@@ -224,6 +251,21 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 
 **Scopes catalogue (restricted keys):** `checkout_sessions.read|write`, `payment_intents.read|write`, `refunds.read|write`, `payment_links.read|write`, `customers.read|write`, `invoices.read|write`, `subscriptions.read|write`, `products.read|write`, `webhook_endpoints.read|write`, `events.read`, `destinations.read`, `balance_transactions.read`, `agentpay.facilitate`. Secret keys hold all scopes except dashboard-only actions. Publishable keys: `checkout:public`, `elements:public`.
 
+### 6.1 Console routes (step 2.1, spec `OPS_ROUTES`, service `identity`)
+
+Visibility `ops`, paths `/ops/…`, reached only through the console host (§8.1). `opsRoles` `ops`+`ops_admin`.
+
+| operationId | Method & path | Auth | Notes |
+|---|---|---|---|
+| `opsEnrolmentVerify` | `POST /ops/auth/enrolment/verify` | anonymous | `{token}` (from `operator-add`) → `OpsRegistration {registration_token}`; `link_expired`, `link_used` |
+| `opsPasskeyRegistrationOptions` · `opsPasskeyRegistrationVerify` | `POST /ops/auth/passkeys/registration/options` · `/verify` | anonymous + registration token | attestation `direct`, cross-platform, discoverable, UV required; AAGUID must be allow-listed (`403 authenticator_not_allowed`) → `OpsSession` + `__Host-np_ops` |
+| `opsPasskeyAuthenticationOptions` · `opsPasskeyAuthenticationVerify` | `POST /ops/auth/passkeys/authentication/options` · `/verify` | anonymous | only `kind='ops'` passkeys of active operators; every refusal `401 webauthn_failed`; sign-in counts as step-up |
+| `opsStepUpOptions` · `opsStepUpVerify` · `getOpsSession` · `opsLogout` | `POST /ops/auth/step_up/options` · `/verify` · `GET /ops/auth/session` · `POST /ops/auth/logout` | `ops:console.session` | `OpsSession {operator, role, csrf_token, step_up_until, idle_expires_at, expires_at}` |
+| `listOpsMerchants` · `getOpsMerchant` | `GET /ops/merchants` · `/{acct}` | `ops:identity.merchants.read` | `q` (exact `acct_` id or member email, name prefix), `status`, `kyb_status`, `live_enabled`; `OpsMerchant` = `Account` + owners, member count, active live destinations, `recovered_at` |
+| `listOpsAuditEvents` | `GET /ops/audit_events` | `ops:identity.audit.read` | platform audit log (`AuditEvent`), filters account, actor, actor type, action, target, created |
+
+Every console write (here and in the other services) is audited with `actor_type = operator`, `actor_id = usr_…`. Identity's own operator actions (sign-in, enrolment, step-up) are audited in `audit_events` directly. **Unified audit trail (T-12, lead decision at step 2.1 integration):** compliance and sentinel publish every operator action as `evt.compliance.ops_action.recorded` / `evt.sentinel.ops_action.recorded` (`OpsActionEvent`, ids only); identity's consumer inserts one `audit_events` row per event (`id` = the event's action id, so redelivery is a no-op; `actor_type = operator`, `actor_id` = `actor.sub`, `details` = `{ops_role, approval, source: compliance|sentinel}`), so `listOpsAuditEvents` is one trail across services. Their own append-only logs (case events, `ops_approvals`, `kill_switch_log`) stay the detail source on the respective console pages. Payments' and rails' console writes (reconciliation, reverify) are audited locally for now; publishing them the same way is a follow-up (open question for the lead).
+
 ## 7. Events
 
 | Produced subject | When | Consumers |
@@ -232,13 +274,16 @@ All public routes follow `api-conventions.md`; dashboard routes are session-only
 | `evt.identity.account.updated` | live_enabled, kyb_status, settings, status change | payments (context cache), webhooks (`account.updated`) |
 | `evt.identity.settlement_destination.created` / `.cooling_off` / `.activated` / `.disabled` / `.default_changed` | transitions | payments (context cache), notify (security emails), webhooks (`settlement_destination.*`), sentinel (cache invalidation) |
 | `evt.identity.api_key.created` / `.revoked` | key lifecycle | identity itself (cache purge across replicas), webhooks? no |
-| `evt.identity.member.added` / `.removed` | team changes | notify |
+| `evt.identity.member.added` / `.removed` / `.role_changed` (step 2.1, `MemberEvent`: ids and roles only) | team changes | notify (`security.member_changed`) |
+| `evt.identity.settlement_destination.pending_approval` (step 2.1) | a destination waits for a second approver | notify (other owners/admins) |
 
 | Consumed subject | Handler |
 |---|---|
-| `evt.compliance.kyb.approved` / `.rejected` / `.needs_info` | set `kyb_status`, recompute `live_enabled` |
+| `evt.compliance.kyb.approved` / `.rejected` / `.needs_info` | set `kyb_status`, recompute `live_enabled`; on `approved` read the case and set `verified_legal_name`, `country` (step 2.1) |
+| `evt.compliance.kyb.submitted` (step 2.1) | set `kyb_status = pending` |
 | `evt.compliance.destination.blocked` | disable destination with reason `compliance` |
 | `evt.compliance.account.suspended` / `.reinstated` | set account `status` |
+| `evt.compliance.ops_action.recorded` · `evt.sentinel.ops_action.recorded` · `evt.payments.ops_action.recorded` · `evt.rails.ops_action.recorded` (step 2.1 integration) | insert into `audit_events` (one console audit trail, §6.1); idempotent on the action id |
 
 ## 8. Algorithms
 
@@ -254,6 +299,11 @@ in: Authorization, X-NearPay-Client-Secret, Cookie, X-CSRF-Token, X-Forwarded-Me
    spec definition declares the error `account_not_live` (derived from the route table, not a hand-kept list) → 403 account_not_live
    console host (ops.*) → cookie '__Host-np_ops' and principal must be in ops_operators → ptype 'ops'
    (authz accepts console sessions; issuing them arrives with the console in Stage 2 — Stage 1 has no ops sign-in route, ops work runs through the ops CLIs)
+   step 2.1: on the console host only `/ops/*` is routed; anonymous allow-list = spec `OPS_ANONYMOUS_ROUTES` (enrolment + passkey
+   sign-in); every other `/ops/*` route needs an ops session (kind 'ops', not revoked, idle ≤ 30 min, absolute ≤ 12 h — spec
+   OPS_SESSION_TTL_SECONDS) whose user has an active ops_operators row; the dashboard cookie is ignored there and the ops cookie
+   is ignored on every other host; CSRF as for dashboard sessions; claims: sub = usr id, ptype 'ops', ops_role, scp =
+   OPS_ROLE_SCOPES[role], step_up_until; no acct/lm (ops routes take account and mode as parameters)
 4. account = cache(acct) → status suspended & livemode & unsafe method → 403 account_suspended
 5. rate limit: valkey token bucket key 'rl:'+principal (live 100 rps burst 200; test 25/50; anonymous 10/20 per IP) → 429 + Retry-After
    client IP = CF-Connecting-IP on the server stage (Cloudflare-only origin), X-Forwarded-For first hop from Traefik locally
@@ -296,7 +346,7 @@ Query account + fee schedule + active destinations (+ defaults) for `(account, l
 
 ## 11. Configuration
 
-`NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file; v1 list: `POST /v1/auth/{signup,magic_links/verify,passkeys/*,recovery}`, `GET|POST /v1/checkout/sessions/{id}/public/**`, `POST /v1/checkout/sessions/{id}/agent_pay/**`, `GET|POST /v1/payment_links/{id}/public/**`, `GET /v1/invoices/{id}/public`, `POST /v1/attestations/deposit_instructions`, `GET /v1/attestations/keys`, `GET /v1/assets`, `GET /x402/supported`, `GET /v1/webhook_signing_keys`, `POST /webhooks/kyb/{vendor}`, `POST /webhooks/email/{provider}` — every other route requires a credential), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
+`NP_WEBAUTHN_RP_ID` (`nearpay.money` / `nearpay.localhost`), `NP_WEBAUTHN_ORIGINS`, step 2.1: `NP_OPS_ORIGIN` (console origin, enrolment links and ops WebAuthn origin), `NP_OPS_AAGUID_ALLOWLIST` (file of hardware-key AAGUIDs accepted for ops passkeys; local stacks may add the CDP virtual authenticator's AAGUID only when `NP_ENV` is `local`/`test`), `NP_JWT_KEYS_DIR` (current/next Ed25519 PEM files), `NP_COOLOFF_SECONDS` (86400; 0 allowed only when `NP_ENV=local`), `NP_RECOVERY_LOCK_SECONDS` (172800), `NP_TURNSTILE_SECRET_FILE`, `NP_PII_KEK_FILE`, `NP_PUBLIC_ANON_ROUTES` (file; v1 list: `POST /v1/auth/{signup,magic_links/verify,passkeys/*,recovery}`, `GET|POST /v1/checkout/sessions/{id}/public/**`, `POST /v1/checkout/sessions/{id}/agent_pay/**`, `GET|POST /v1/payment_links/{id}/public/**`, `GET /v1/invoices/{id}/public`, `POST /v1/attestations/deposit_instructions`, `GET /v1/attestations/keys`, `GET /v1/assets`, `GET /x402/supported`, `GET /v1/webhook_signing_keys`, `POST /webhooks/kyb/{vendor}`, `POST /webhooks/email/{provider}` — every other route requires a credential), `NP_RATE_LIMITS` (json), service client secrets file for each consumer service (`NP_SERVICE_CLIENTS_FILE`).
 
 Step 1.2 additions: `NP_DASHBOARD_ORIGIN` (magic-link target), `NP_COMPLIANCE_URL`, `NP_RAILS_URL`, `NP_NOTIFY_URL` (peers), `NP_NEAR_RPC_URLS` (NEAR `view_access_key` pool), `NP_EVM_RPC_URLS` (`{"<chain id>": [urls]}` for ERC-1271), `NP_VALKEY_URL` (key cache, rate limits; down → per-pod limits at half rate), `NP_NATS_URL` (worker: events; api, optional: cache purge). Cloudflare's Turnstile test secrets are answered locally outside the server stage.
 
@@ -336,9 +386,9 @@ Metrics: `nearpay_identity_authz_duration_seconds{result}`, `…_authz_cache_hit
 | Stage | Scope |
 |---|---|
 | 1 | signup + passkeys, step-up, API keys (secret/publishable), destinations for NEAR/Intents/EVM with attestation, single-approver flow (cool-off configurable to 0 locally, 24 h on server), authz incl. mode header and ops principals (accepted, not issued), JWKS, service tokens, settlement context, notification recipients, test-mode destinations; live mode gated by the **manual** KYB decision from compliance (ops CLI); ops CLI (§17) |
-| 2 | team members & invitations, two-approver rule, restricted keys, recovery flow, console sessions (ops sign-in), KYB-driven live mode, audit export |
+| 2 | team members & invitations, multi-account sessions, two-approver rule, restricted keys, recovery flow, console sessions (enrolment + hardware passkeys) and console reads (§6.1), live mode driven by the ops KYB decision on self-declared details (ADR-0020), audit export (audit-events list) |
 | 4 | Solana/Bitcoin attestation |
 
 ## 17. Ops CLI (Stage 1)
 
-`docker compose exec identity-api /nodejs/bin/node dist/ops.js <command>`: `account-show <acct|email>` (also the testbed's "account live" check, since `GET /v1/account` is session-only) · `operator-add <email> ops|ops_admin` · `operator-revoke <email>` · `destination-cooloff-skip <sd_…>` (local) · `seed-demo [--email] [--name] [--destination]` (`NP_ENV=local` only; idempotent on the email: owner, account "Demo Shop", an active test NEAR Intents-account destination for USDC (`merchant-demo.near` by default) and test secret + publishable keys, printed as JSON; `seed.sh data` uses it, platform §1).
+`docker compose exec identity-api /nodejs/bin/node dist/ops.js <command>`: `account-show <acct|email>` (also the testbed's "account live" check, since `GET /v1/account` is session-only) · `operator-add <email> ops|ops_admin` (step 2.1: also emails a 24 h enrolment link, notify `ops.enrolment`, for the operator's hardware passkey) · `operator-revoke <email>` · `destination-cooloff-skip <sd_…>` (local) · `seed-demo [--email] [--name] [--destination]` (`NP_ENV=local` only; idempotent on the email: owner, account "Demo Shop", an active test NEAR Intents-account destination for USDC (`merchant-demo.near` by default) and test secret + publishable keys, printed as JSON; `seed.sh data` uses it, platform §1).
