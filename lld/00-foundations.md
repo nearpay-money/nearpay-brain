@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Version 1.5 (step 2.1 rails-fx: kit money FX helpers, http call headers, intents `sendSignedTx`; spec exact rates; changes in §20) · Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -72,13 +72,13 @@ Rules: additive changes only within a version; new enum values are allowed only 
 | Package | Public surface (signatures abbreviated) |
 |---|---|
 | `@nearpay-internal/ids` | `newId(prefix): PrefixedId`, `toUuid(id)`, `fromUuid(prefix, uuid)`, `isId(prefix, s)` — UUIDv7, Crockford base32 (26 chars) |
-| `@nearpay-internal/money` | `type Amount = bigint`; `Fiat {amount: bigint, currency}`; `AssetAmount {amount: bigint, assetId}`; `parseUnits`, `formatUnits`, `mulDivFloor(a,b,c)`, `bpsOf(amount,bps)`, `minorUnits(currency)`; throws on any `number` input |
+| `@nearpay-internal/money` | `type Amount = bigint`; `Fiat {amount: bigint, currency}`; `AssetAmount {amount: bigint, assetId}`; `parseUnits`, `formatUnits`, `mulDivFloor(a,b,c)`, `bpsOf(amount,bps)`, `minorUnits(currency)`; exact rationals `parseDecimal`, `mul`/`div`, `floor`/`ceil`; **Stage 2:** `RoundingMode` (`floor`·`ceil`·`half_even`·`half_up`) + `roundRational`, `toDisplayDecimal`, `ratioToWire`/`ratioFromWire` (spec `Ratio`), `convertUnits(amount, fromExp, rate, toExp, mode)`, `toUsdMicros`, `parseJsonDecimals` (JSON numbers kept as source text); throws on any `number` input |
 | `@nearpay-internal/service` | `createService({name, config, routes: [implement(route, handler)], idempotency, readiness, background})` → Fastify app with spec-route auth + validation, health (`/healthz`, `/readyz`), metrics, OTel, pino, graceful shutdown (30 s drain), request-id, error mapping, SSE; consumers and jobs run as `background` tasks; `loadConfig(shape)` reading `NP_*` env + `NP_*_FILE` secrets (`/run/secrets/*`); `runMain({api, worker, migrate, …})` |
 | `@nearpay-internal/db` | `createDb({url\|urlFile})` (Kysely + pg pool), `withTx(db, fn, {isolation})`, `migrate(db, dir)`, **outbox** `emit(tx, event)` + `startOutboxRelay({db, pool, publish})`, **inbox** `consume(tx, eventId)`, **idempotency** `withIdempotency(db, ctx, fn)` / `idempotencyStore(db, cipher)`, **jobs** `enqueueJob`/`startJobWorker`, `advisoryLeader({pool, name, run})`, envelope encryption, retention; **0.1.2:** `inboxHandler` (inbox dedupe + handler in one transaction), `deadLetterSink`, background tasks `outboxRelayTask`, `jobWorkerTask`, `leaderTask`, `recurringJobsTask` (leader-elected, one job per slot through the dedupe key) |
 | `@nearpay-internal/bus` | `connectBus()`, `ensureStreams(defs)`, `subscribe({durable, filter, handler, maxDeliver})`, `publish(subject, envelope, msgId)`; **0.1.2:** `startDomainConsumers` creates one durable per producing stream with the handled subjects as filters and refuses subjects the event catalogue does not route to the service; `unhandledSubjects`, `durablesOf` |
 | `@nearpay-internal/auth` | `verifyInternalJwt(token, jwks)`, `requireScope(ctx, scope)`, `serviceTokenClient({clientId, secretFile})`, header constants |
-| `@nearpay-internal/http` | `httpClient({baseUrl, timeoutMs, retries, breaker})` with jittered backoff, idempotent-only retries, circuit breaker (opossum semantics), trace + request-id propagation; its `call` cannot set extra headers (agentpay sends the payer's client secret with its own request; change requested) |
-| `@nearpay-internal/intents` | NEAR Intents payloads: `buildTransferIntents`, `buildPayload({signerId, deadline, nonce, intents})`, `makeNonce(saltHex)`, `encodeNep413`, `encodeErc191`, `verifySigned(multiPayload)`, `parseDip4Events(logs)`, `intentsRpc({currentSalt, simulateIntents, executeIntents, buildExecuteTx, mtBatchBalanceOf})`. `executeIntents` loses the tx hash when the send times out, so agentpay signs with `buildExecuteTx`, stores the hash and sends it itself (agentpay §7); a kit call that sends an already-signed tx and returns the outcome block hash is requested |
+| `@nearpay-internal/http` | `httpClient({baseUrl, timeoutMs, retries, breaker})` with jittered backoff, idempotent-only retries, circuit breaker (opossum semantics), trace + request-id propagation; `call(route, {headers})` adds route-declared headers (e.g. a forwarded client secret) but never replaces the token (Stage 2, CR-15-16) |
+| `@nearpay-internal/intents` | NEAR Intents payloads: `buildTransferIntents`, `buildPayload({signerId, deadline, nonce, intents})`, `makeNonce(saltHex)`, `encodeNep413`, `encodeErc191`, `verifySigned(multiPayload)`, `parseDip4Events(logs)`, `intentsRpc({currentSalt, simulateIntents, executeIntents, buildExecuteTx, mtBatchBalanceOf})`. `executeIntents` loses the tx hash when the send times out, so agentpay signs with `buildExecuteTx` and stores the hash first; since Stage 2 it sends with `sendSignedTx({bytes, txHash})`, whose `ExecuteResult` carries `blockHash` (CR-15-16) |
 | `@nearpay-internal/chains` | Chain registry (CAIP-2 ↔ 1Click `blockchain` ↔ display), address validation per chain family, finality rules, explorer URL builders |
 | `@nearpay-internal/testing` | Testcontainers fixtures, fake clock, factories for every aggregate, `eventProbe(natsUrl)` + `expectEvent(probe, subject, matcher)`, test tokens; **0.1.1:** `mockPeer` serves a peer's spec routes through the real service bootstrap (requests validated, caller tokens verified and authorized from each route's auth list, mocked responses validated, calls recorded), `mockError`, `mintServiceToken`, `testServiceToken`; **0.1.2:** `provisionServiceDatabase` mirrors `postgres-init` (migrator owns, app role gets DML through default privileges) |
 
@@ -92,9 +92,10 @@ Kit packages contain **no domain rules** (ADR-0001). Semver; a breaking change b
 ## 6. Money and assets
 
 - In code: `bigint` only. In JSON: fiat `amount` is an integer (`number`, must be ≤ 2^53 − 1, validated); asset amounts are decimal **strings** of base units.
+- Rates (prices, FX) on the wire are exact rationals `Ratio {num, den}` (integer strings) with a display-only `decimal` (spec 0.1.6 `PriceRate`); feed values are parsed from their text (`parseDecimal`, `parseJsonDecimals`), never via floats.
 - Asset identity = NEAR Intents asset ID (`nep141:…`, `nep245:…`). Chain identity = CAIP-2 where it exists (`eip155:8453`, `near:mainnet`, `solana:5eykt4Us…`, `bip122:000000000019d6689c085ae165831e93`), with 1Click's `blockchain` code kept as an attribute.
 - Storage: fiat minor units `bigint`; **asset base units `numeric(78,0)`** (24-decimal tokens exceed `bigint`).
-- Rounding: conversions to the merchant's settlement amount round **down**; fees round **up**; payer-facing totals round **up**. All helpers in `@nearpay-internal/money`.
+- Rounding: conversions to the merchant's settlement amount round **down**; fees round **up**; payer-facing totals round **up**; display renderings of rates round **half-even**. Every helper takes the mode explicitly. All helpers in `@nearpay-internal/money`.
 
 ## 7. Database conventions
 
@@ -256,3 +257,10 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 ## 19. Changes in version 1.4 (from the step 1.4 implementation)
 
 - **Spec (§3):** release 0.1.5 (additive; `pnpm compat` reports no breaking change since 0.1.4) with the step 1.2/1.3 change requests CR-15-01, 02, 03, 05, 08, 09, 11, 12 and 13 (`roadmap/open-questions.md`); new id prefix `whd_` (webhook delivery, owner webhooks; domain-model §1); tolerant parsing of open enums for clients (`safeParseTolerant` / `parseTolerant`). Not in 0.1.5: CR-15-04, 06, 07, 10 and 15.
+
+## 20. Changes in version 1.5 (step 2.1, rails-fx)
+
+- **Money (§6):** rates travel as exact `Ratio {num, den}`; explicit rounding modes incl. banker's rounding for display; kit `convertUnits`/`toUsdMicros`/`parseJsonDecimals` for rails FX and price feeds (rails §8.2).
+- **Kit (§4):** `@nearpay-internal/http` `call` with extra headers and `@nearpay-internal/intents` `sendSignedTx` (CR-15-16, both resolved); kit stays at 0.1.2 until the lead releases.
+- **Spec (§3):** step 2.1 additions are additive within 0.1.x; new error codes record `since: "0.1.6"` (`ErrorDefinition.since` is now `` `0.1.${number}` ``).
+

@@ -1,6 +1,6 @@
 # LLD — `nearpay-rails`
 
-> Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
+> Version 1.3 (step 2.1 contracts, spec 0.1.6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, ops reads §6, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
 
 ## 1. Scope
 
@@ -23,9 +23,13 @@ src/domain/pricing/          settlement amount, FX, par policy, depeg guard, rou
 src/domain/token-registry/   token policy (enabled, stable, family), route classes
 src/domain/verification/     tiers, evidence model, comparison rules
 src/providers/port.ts        RouteProvider interface
-src/providers/oneclick/      1Click client (JWT partner key → Authorization: Bearer, else X-API-Key), live-body normalisation (nulls dropped, nested correlationId), request/response mapping, signature check (SDK)
+src/providers/oneclick/      1Click client (JWT partner key → Authorization: Bearer, else X-API-Key), request/response mapping, signature check (SDK); since spec 0.1.6 the `OneClick*` schemas accept the live shape (nullish optionals, status-nested quote without `correlationId`), so the Stage 1 body normalisation can go
 src/providers/sandbox/       same client, sandbox base URL + sandbox signature key
 src/providers/direct-intents/ requirement builder for signed Verifier transfers (no swap)
+src/providers/prices/        PriceProvider port: oneclick (primary), coingecko (secondary), sandbox (test)
+src/providers/fx/            FxProvider port: ecb (live), fixed (test table)
+src/providers/explorer/      Explorer client (owner JWT) and sandbox mirror (same schemas)
+src/archive/                 observation archive writer (Parquet) and archive store (file | s3)
 src/trackers/hot-poller/     scheduler, token buckets, status application
 src/trackers/explorer-feed/  cursor windows, change detection
 src/trackers/near-indexer/   finalized block stream, DIP-4/NEP-245/NEP-141 parsing, vault events
@@ -43,6 +47,15 @@ create table tokens (                                    -- one registry per mod
   is_usd_stable boolean not null default false, enabled boolean not null default true,
   price_usd numeric(38,18), price_updated_at timestamptz, secondary_price_usd numeric(38,18), secondary_updated_at timestamptz,
   memo_required boolean not null default false, refreshed_at timestamptz not null, primary key (livemode, asset_id));
+-- Stage 2 (migration 0003): prices are kept as exact rationals besides the display numerics
+alter table tokens add column peg_currency text,                      -- 'usd' for is_usd_stable; 'eur' etc. from NP_STABLE_PEGS
+  add column coingecko_id text,                                          -- from /v0/tokens coingeckoId (NP_PRICE_SECONDARY_IDS overrides)
+  add column price_num numeric(78,0), add column price_den numeric(78,0),
+  add column secondary_num numeric(78,0), add column secondary_den numeric(78,0);
+create table fx_rates (                                   -- one row per (mode, currency): the latest rate to USD
+  livemode boolean not null, currency text not null, num numeric(78,0) not null, den numeric(78,0) not null,
+  source text not null check (source in ('ecb','fixed')), reference_date date, as_of timestamptz not null,
+  fetched_at timestamptz not null, valid_until timestamptz, primary key (livemode, currency));
 create index tokens_contract on tokens (livemode, chain, contract_address) where enabled;
 -- 1Click /v0/tokens also lists `1cs_v1:…` ids (27 on 2026-11-06), which are not NEAR Intents asset ids: dropped at refresh
 -- (the spec AssetId rejects them). Test mode never offers an asset the sandbox cannot quote and works offline.
@@ -106,6 +119,11 @@ create table provider_observations (
     check (source in ('quote','submit','hot_poll','explorer','indexer','watcher','verifier','operator')),
   provider_status text, payload jsonb not null, payload_sha256 bytea not null,
   provider_updated_at timestamptz, applied boolean not null default false, observed_at timestamptz not null default now());
+-- Stage 2 (migration 0003): payload becomes nullable; archived rows keep the hash and point into the archive (§8.11)
+alter table provider_observations alter column payload drop not null,
+  add column archive_key text, add column archive_row integer, add column archived_at timestamptz,
+  add constraint obs_archived check ((payload is null) = (archive_key is not null));
+alter table executions add column explorer_status text, add column explorer_seen_at timestamptz;   -- last Explorer row status (§8.5, Tier-B check)
 create index obs_execution on provider_observations (execution_id, observed_at);
 
 create table verifications (                             -- final outcomes only (pending retries are not recorded)
@@ -166,7 +184,7 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 
 | Method & path | Caller (scope) | Request → Response | Errors |
 |---|---|---|---|
-| `POST /internal/executions` | payments (`rails.executions.write`) | see §8.1 → execution view `{id, version, state, method, provider, route_class, applied_fee_bps, settlement:{amount_base, tag, expected, asset_id}, price_snapshot, deposit?:{address, memo, amount_in, min_amount_in, chain, deadline}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}}` | `asset_unsupported`, `route_unavailable`, `pricing_unavailable`, `screening_blocked`, `deadline_too_short`, `quote_rejected`, `quote_integrity_failed`, `rail_unavailable` |
+| `POST /internal/executions` | payments (`rails.executions.write`) | see §8.1; non-USD fiat pricing since Stage 2 (`currency_unsupported`, `fx_rate_unavailable`) → execution view `{id, version, state, method, provider, route_class, applied_fee_bps, settlement:{amount_base, tag, expected, asset_id}, price_snapshot, deposit?:{address, memo, amount_in, min_amount_in, chain, deadline}, intents_requirement?:{pay_to, token, amount, fee_to, fee_amount, binding, deadline}}` | `asset_unsupported`, `route_unavailable`, `pricing_unavailable`, `screening_blocked`, `deadline_too_short`, `quote_rejected`, `quote_integrity_failed`, `rail_unavailable` |
 | `GET /internal/executions/{id}` | payments, agentpay (`rails.read`) | execution view + latest evidence | |
 | `GET /internal/executions?deposit_address=&memo=` | sentinel (`rails.read`) | `{exists, execution_id, account_id, livemode}` — used by sentinel **only** to decide whether a mismatch is a genuine integrity breach (kill switch) or a spoofed request | |
 | `GET /internal/assets/{asset_id}?livemode=` | agentpay, payments, sentinel (`rails.read`) | `{asset_id, chain, decimals, is_usd_stable, price_usd, price_ok, as_of}` from that mode's registry (`livemode` optional since spec 0.1.3: omitted → live, falling back to test) | `asset_unsupported` |
@@ -175,8 +193,14 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 | `GET /internal/options?destination_asset=&destination_type=&amount_out=&chain=&wallet=&livemode=` | payments | fees are **indicative from configuration** (rails has no merchant fee schedule on this call; the attempt quotes the real fee) → `{options:[{method: route_quote\|intents_transfer, origin_asset_id, chain, symbol, decimals, estimated_amount_in, route_class, applied_fee_bps, min_deadline_s, available, reason?}]}` — an `intents_transfer` option is listed when the destination is an Intents account (paying asset = destination asset) | |
 | `GET /internal/destination-minimums?keys=` | identity, payments | `{<destination_key>: {min_amount_base, min_usd_micros, computed_at}}` | |
 | `GET /internal/chain-profiles` | payments, checkout via payments | profiles (public subset) | |
-| `GET /internal/evidence?account_id=&livemode=&day=` | payments (reconciliation), sentinel | settled executions with evidence | |
+| `GET /internal/evidence?account_id=&livemode=&day=&states=&kind=` | payments (reconciliation), sentinel, ops | executions that reached a terminal state on the UTC day (by `terminal_at`) with evidence; default `states=succeeded`, both kinds (Stage 2 filters, spec 0.1.6) | |
 | `GET /v1/assets` | anonymous | enabled tokens `{asset_id, chain, symbol, decimals, family, is_usd_stable}` | |
+| `GET /internal/fx-rates?livemode=&currencies=` (Stage 2) | payments, ops (`rails.read`) | `FxRates {base:'usd', livemode, currencies:[FxRate{currency, exponent, available, stale, reference_date, rate: PriceRate}], as_of}` — the accepted pricing currencies (`NP_PRICING_CURRENCIES`, `usd` first) with source, `as_of` and `valid_until` of each rate; a stale rate is shown with `available:false` and never used | |
+| `GET /internal/settlement-estimate?amount=&currency=&asset_id=&settlement_asset=&livemode=` (Stage 2) | payments, ops (`rails.read`) | `SettlementEstimate {pricing, usd_micros, settlement?:{asset_id, amount_base, par}, price_snapshot}` — the §8.2 rules without quoting: payments values non-USD prices in USD micros (minimum, unverified cap) and gets the options `amount_out` | `currency_unsupported`, `asset_unsupported`, `pricing_unavailable`, `fx_rate_unavailable` |
+| `GET /internal/executions/{id}/observations?starting_after=&limit=` (Stage 2) | payments, ops (`rails.read`) | `{data:[ProviderObservation{id obs_, source, provider_status, provider_updated_at, applied, observed_at, payload_sha256, payload \| null, archive \| null}], has_more}` oldest first | |
+| `GET /internal/ops/executions?livemode=&account_id=&state=&held_reason=&kind=&provider=&deposit_address=&created_gte=&created_lte=` (Stage 2) | console (`ops:rails.read`) | `ExecutionPage {data: Execution[], has_more}` newest first — Verifier holds (`state=held`) and the executions explorer | |
+| `POST /internal/executions/{id}/reverify` (Stage 2) | console (`ops:rails.verify`) | `{reason}` → `202`; schedules the verifier now (`verify_at = now()`) for a `held` or `verifying` execution, observation `operator`; never forces a state (INV-2) | `state_conflict` (any other state) |
+| `GET /internal/evidence/summary?account_id=&livemode=&day=` (Stage 2) | payments (reconciliation), sentinel, ops (`rails.read`) | `EvidenceSummary` (§8.10) | |
 
 ## 7. Events
 
@@ -232,16 +256,38 @@ req: {idempotency_key, kind, method, account_id, livemode, origin:{asset_id, cha
 
 ### 8.2 Pricing (`domain/pricing`)
 ```
-settle(pricing, d):
-  if pricing.currency == 'asset': if pricing.asset == d → amount; else usd = amount × price(pricing.asset); → toUnits(usd, d)
-  usd = pricing.currency == 'usd' ? amount/100 : amount/10^exp × fx(currency→usd)          // exact rational math
-  if d.is_usd_stable and parOk(d): return floor(usd × 10^d.decimals)                       // par policy
-  return floor(usd / price(d) × 10^d.decimals)
-price(t): requires |primary − secondary| / secondary ≤ 1.5% and both fresher than 60 s → else pricing_unavailable
-parOk(d): |price(d) − 1| ≤ 2% (depeg guard) — if false, par disabled for d (alert)
-fx(c): real-time FX ≤ 5 min old, ECB daily fallback ≤ 36 h; else pricing_unavailable
+settle(pricing, d):                                                   // exact rationals, kit money (no floats, INV-5)
+  if pricing.currency == 'asset':
+     if pricing.asset == d → return amount
+     usd = amount / 10^dec(pricing.asset) × price(pricing.asset)        // price() = primary, dual-source checked
+  else:
+     c = pricing.currency; c ∉ NP_PRICING_CURRENCIES → currency_unsupported
+     if d.peg_currency == c and parOk(d): return amount × 10^(d.decimals − exp(c))       // same-currency par (USDC for usd, EURC for eur)
+     usd = amount / 10^exp(c) × fx(c)                                    // fx(usd) = 1 (source fixed)
+  if d.peg_currency == 'usd' and parOk(d): return floor(usd × 10^d.decimals)              // USD par
+  return floor(usd / price(d) × 10^d.decimals)                          // non-par: needs both price sources
+price(t): primary = 1Click /v0/tokens price, valid ≤ NP_PRICE_PRIMARY_MAX_AGE_S (120) after priceUpdatedAt;
+          secondary = CoinGecko price, valid ≤ NP_PRICE_SECONDARY_MAX_AGE_S (300) after last_updated_at;
+          both valid and |primary − secondary| / secondary ≤ 1.5% → primary; else pricing_unavailable(t)
+parOk(d): d.peg_currency set and |price_primary(d) / fx(peg) − 1| ≤ 2% with a primary price ≤ 5 min old; when a valid
+          secondary exists it must pass the same band (depeg guard); false → par disabled for d (alert), non-par rules apply
+fx(c):    the stored rate of c with now < valid_until, else fx_rate_unavailable(c) — a stale rate is never used
 ```
-All arithmetic uses bigint rationals (`mulDivFloor`); snapshot `{primary, secondary, fx, par:boolean, as_of}` stored.
+All arithmetic uses bigint rationals (kit `@nearpay-internal/money`: `parseDecimal`, `mul`/`div`, `floor`); conversions to the settlement amount round **down** (foundations §6). The snapshot stored on the execution and returned as `price_snapshot` is `{primary_usd, secondary_usd, fx, par, as_of}` (decimal strings, kept for 0.1.5 readers) plus, since spec 0.1.6, `currency`, `par_currency` and `rates[]` — every `PriceRate` used, exact (`value: {num, den}`) with `source`, `as_of`, `fetched_at` and `valid_until`, so payments, the dashboard and the console can show "EUR→USD 1.0823, ECB reference rate of 2026-11-06".
+
+**Sources (ADR-0020 decision 5; facts in `reference/landscape.md` §8).** Each sits behind a port so a vendor is a new adapter, not a contract change.
+
+| Port | Live adapter | Test-mode adapter | Refresh |
+|---|---|---|---|
+| `PriceProvider` primary | 1Click `GET /v0/tokens` `price` + `priceUpdatedAt` (the token refresh, §9) | sandbox `/v0/tokens` fixed prices | 30 s |
+| `PriceProvider` secondary | **CoinGecko keyless** `GET https://api.coingecko.com/api/v3/simple/price?ids=<ids>&vs_currencies=usd&include_last_updated_at=true&precision=full`, one batched call (≤ 515 ids) for enabled tokens that are non-par settlement assets or stablecoins (depeg guard); ids = `/v0/tokens` `coingeckoId`, overridden per asset by `NP_PRICE_SECONDARY_IDS` | the sandbox price again (role `secondary`, source `sandbox`) | 60 s; 429 → back off ×2 up to 10 min |
+| `FxProvider` | **ECB** daily XML `https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml` (29 currencies vs EUR) | fixed table `NP_TEST_FX_RATES` (source `fixed`, `valid_until` null) | every 30 min (conditional GET) |
+
+Feed numbers are read without floats: JSON prices go through kit `parseJsonDecimals` (number tokens kept as their source text) and then `parseDecimal`; the ECB `rate="1.0823"` attributes are decimal strings already. **Cross rates:** ECB quotes `C per EUR`; `fx(eur) = USD_per_EUR`, `fx(c) = USD_per_EUR / C_per_EUR` (an exact rational, generally not a finite decimal, hence `Ratio`). `usd` needs no source.
+
+**ECB staleness bound (publication calendar).** The ECB publishes once per TARGET working day at about 16:00 CET; TARGET closing days are Saturdays, Sundays, 1 January, Good Friday, Easter Monday, 1 May, 25 and 26 December (`domain/pricing/target-calendar.ts`, Easter by the Gregorian computus). For the rates of reference day `D`: `as_of = D 16:00 Europe/Berlin`; `valid_until = min(next TARGET working day after D at 16:00 Europe/Berlin + NP_FX_GRACE_S (7200 s), as_of + NP_FX_MAX_AGE_S (518 400 s = 6 days))`. A Friday rate therefore serves until Monday 18:00 CET (~74 h); the Thursday before Easter until Tuesday 18:00 CET (~5 days 2 h); the hard cap catches a missed publication or an unknown closing day. A late or missing publication makes the currency **unavailable** at `valid_until` (`FxRate.stale = true`, `available = false`, alert `fx_stale{currency}`), never silently older: new sessions/intents and executions priced in it fail with `fx_rate_unavailable`; executions already quoted keep their snapshot. USD pricing settled at par in USD stablecoins never needs FX or the secondary feed (a non-USD peg such as EURC needs the FX rate for its depeg guard).
+
+**Accepted pricing currencies:** `NP_PRICING_CURRENCIES` (Stage 2 default `usd,eur,gbp,chf,jpy,cad,aud`), each must be an ECB currency (or `usd`/`eur`); `GET /internal/fx-rates` is the source of truth payments reads (payments §8.1 `currency_unsupported` / `fx_rate_unavailable`). Disclosure (ADR-0020): ECB reference rates are for information purposes and move once a day; merchants pricing in non-USD fiat carry the intraday drift, shown with the rate's source and reference date.
 
 ### 8.3 Amount tags
 ```
@@ -267,6 +313,8 @@ for each (token bucket NP_ONECLICK_STATUS_RPS, priority: has tx hash 1, signalle
 
 ### 8.5 Explorer feed (`rails-feeds`, leader)
 Every 5 s one request (rotating three windows): (a) `statuses=PROCESSING,INCOMPLETE_DEPOSIT` newest 1,000; (b) `statuses=SUCCESS,REFUNDED,FAILED` with `startTimestamp = cursor − 30 min`; (c) newest 1,000 of all statuses since cursor. Rows are matched by `(depositAddress, depositMemo)` → if row status ≠ execution.provider_status: `has_signal = true, next_poll_at = now()`, record observation(explorer). Filter `referral=nearpay` (SP-10 confirms semantics). 429 → back off to 10 s. Contract as read from the Explorer `openapi.yaml` (2026-11-06): Bearer JWT; the response is a bare array; `numberOfTransactions` ≤ 1000; `statuses` is comma-separated and its default omits `PENDING`/`INCOMPLETE`; `startTimestamp` is ISO-8601 and exclusive; rows carry no `updatedAt`, and whether the time filter applies to creation or update is undocumented (SP-10 stays open); 1 request per 5 s.
+
+**Stage 2 (spec 0.1.6 `Explorer*` schemas).** The feed runs when the owner's Partner Dashboard JWT is present (`NP_EXPLORER_TOKEN_FILE`; `NP_EXPLORER_ENABLED` defaults to true then). Live rows are validated with `ExplorerTransaction` (nullish optionals, `status` a plain string). Window (a) and (b) set `statuses` explicitly (the API default omits `PENDING_DEPOSIT`/`INCOMPLETE_DEPOSIT`); `numberOfTransactions=1000`; a window that returns 1000 rows continues on its next turn with `lastDepositAddress`/`lastDepositMemo` (`direction=next`) until a page is short. Only rows whose status differs from `executions.explorer_status` are recorded (observation `explorer`, payload hash) and nudge the poller; an unknown status is recorded and nudges the poller too (its status mapping decides `held`). `explorer_status`/`explorer_seen_at` feed the Tier-B cross-check of §8.10. Rows of unknown deposit addresses are ignored (another integrator's `nearpay` referral would be a misconfiguration; counted as `explorer_unmatched_total`). **Test mode** reads the sandbox mirror `GET /api/v0/transactions` with the same client and schemas (service token instead of the JWT, 1 s cadence, no back-off), so the feed is covered by E2E. With the feed running, awaiting executions without a signal keep only the single deadline sweep (§8.4).
 
 ### 8.6 NEAR indexer (`rails-feeds`, leader)
 ```
@@ -306,11 +354,31 @@ Compare `amount ≥ amount_out_expected` → `pass`; `0 < amount < expected` →
 ### 8.9 Destination minimums
 For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid from a NEAR USD stablecoin in an Intents balance (`depositType INTENTS`; `refundTo` = the treasury, or `intents.near` when no live treasury is set; test mode: the test treasury) → `withdrawFee` (USD); `min_usd = max(1.00, 20 × withdrawFee_usd)`; Intents-account destinations: `0.01`. Stored in `destination_minimums`; unknown keys and unavailable quotes → `null`.
 
+### 8.10 Reconciliation evidence (Stage 2)
+Payments' daily reconciliation (payments §9 `reconcile.daily`, 02:00 UTC) compares its statement with rails per account, mode and UTC day:
+```
+day membership: executions with terminal_at in [day 00:00Z, day+1 00:00Z) (succeeded, refunded, failed); refund legs are kind 'refund'
+GET /internal/evidence/summary → totals per (kind, terminal state, asset): count, Σ settled_amount, Σ refunded_amount;
+    in_flight = non-terminal executions of the account created before day+1; held_open = those in 'held'
+    complete = now ≥ day+1 + 1 h and every tracker cursor (near-indexer, evm:<chain>, explorer) is past day+1
+               and in_flight − held_open = 0 for executions whose deadline < day+1
+    tier_b = Tier-B settlements of the day; explorer_confirmed = those whose explorer_status = 'SUCCESS'
+             (unconfirmed listed by id; empty with the Explorer feed off)
+    digest = sha256 over "<ex_id>:<version>\n" of the day's executions in id order
+GET /internal/evidence?states=succeeded,refunded,failed&kind=… → the executions themselves (paged) for line-by-line diffs
+```
+Payments reconciles only `complete` days (retrying later otherwise) and stores the digest with its run; a later different digest for a closed day means late evidence and re-runs the day. Holds are not diffs: they are open cases (console Verifier holds).
+
+### 8.11 Observation archive (Stage 2)
+Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): observations of executions with `terminal_at` older than `NP_OBS_ARCHIVE_AFTER_DAYS` (90) are written per UTC day of `observed_at` to Parquet (`id, execution_id, source, provider_status, provider_updated_at, applied, observed_at, payload_json, payload_sha256`) under `<prefix>/rails/observations/<live|test>/<yyyy>/<mm>/<dd>/<batch>.parquet`; the file is read back and every row's payload hash re-checked before, in one transaction per batch, `payload` is set to null and `archive_key`/`archive_row`/`archived_at` are set (the hash stays forever). Store: `file` (a Compose volume, local stage) or `s3` (EU object storage, server stage); `NP_OBS_ARCHIVE_STORE` unset → the job does nothing. `GET /internal/executions/{id}/observations` returns archived rows with `payload: null` and `archive {object_key, row, archived_at}`; ops fetch the file from the store.
+
 ## 9. Jobs and loops
 
 | Loop/job | Where | Cadence | Failure |
 |---|---|---|---|
-| token & price refresh | feeds (leader) | `/v0/tokens` every 30 s (1Click refreshes prices ≈ 1/min, so the par policy accepts a price ≤ 5 min old; the dual-source rule keeps 60 s); secondary prices every 30 s; FX every 5 min (no secondary source or FX in Stage 1) | stale → pricing_unavailable for affected assets |
+| token & price refresh | feeds (leader) | `/v0/tokens` every 30 s (1Click refreshes prices ≈ 1/min; the par policy accepts a primary price ≤ 5 min old, the dual-source rule ≤ 120 s primary / ≤ 300 s secondary, §8.2) | stale → pricing_unavailable for affected non-par assets |
+| secondary prices (Stage 2) | feeds (leader) | CoinGecko batch every 60 s; 429 → back off ×2 up to 10 min | stale → non-par assets unavailable; par unaffected |
+| FX refresh (Stage 2) | feeds (leader) | ECB daily XML every 30 min (conditional GET); test mode loads `NP_TEST_FX_RATES` at boot | rate past `valid_until` → currency unavailable + alert `fx_stale` (§8.2) |
 | `tags.release_orphans` | feeds (job) | every 5 min | releases tags of creates that crashed before the execution row existed |
 | `kit.purge` | feeds (job) | hourly | published outbox, old inbox, expired idempotency keys |
 | hot poller | tracker | 500 ms tick | breaker on provider; executions keep `next_poll_at` |
@@ -320,7 +388,7 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid
 | EVM watchers | feeds (leader per chain) | every 2 s (L2) / 12 s (L1) | RPC pool failover |
 | verifier | tracker | event-driven + 10 s retries | → held after timeout |
 | minimums | feeds | hourly | keep last value |
-| observation archive | feeds | daily: > 90 days → Parquet to S3 (server stage), keep hash — Stage 2 | retry |
+| `observations.archive` (Stage 2) | feeds (job) | daily 03:00 UTC: observations of executions terminal > 90 days → Parquet in the archive store (file locally, S3 on the server), keep hash (§8.11) | retry; a batch is nulled only after read-back verification |
 
 ## 10. Integrations
 
@@ -334,14 +402,18 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid
 | NEAR RPC pool (≥ 3 providers) | 3 s | — | hedged reads |
 | neardata / NEAR Lake | 10 s | — | two sources |
 | EVM RPC pool (≥ 2 per chain) | 3 s | — | agreement required ≥ USD 10k |
-| Secondary price API, FX API | 3 s | — | cached |
+| CoinGecko keyless `/api/v3/simple/price` (secondary prices, Stage 2) | 3 s | 1 call / 60 s (keyless limits undocumented, ⚠ landscape §8) | breaker; stale → non-par unavailable |
+| ECB `eurofxref-daily.xml` (FX, Stage 2) | 5 s | 1 call / 30 min | keep last rate until `valid_until` |
+| Explorer `/api/v0/transactions` in test mode → sandbox `/api/v0/transactions` | 2 s | — | same client |
 | compliance screening | 1.5 s | — | policy above |
 
 ## 11. Configuration
 
-`NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE` (live only; absent in Stage 1 local → unauthenticated quotes with +25 bps, appFees still sent), `NP_TEST_TREASURY_ACCOUNT` (test-mode fee recipient, sandbox only), `NP_PROVIDER_SPLIT` (1Click appFees split, §8.1), `NP_AWAITING_SWEEP_S` (30), `NP_SCREENING_FAIL_CLOSED_USD` (1000), `NP_AGREEMENT_USD` (EVM pool agreement threshold), `NP_IDENTITY_URL` + `NP_SERVICE_CLIENT_SECRET_FILE` (service token: `compliance.screen`, `sandbox.use`), `NP_COMPLIANCE_URL`, `NP_VALKEY_URL` (shared 1Click budgets; down → half per replica), `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_EXPLORER_TOKEN_FILE`, `NP_TREASURY_ACCOUNT` (e.g. `treasury.nearpay.near`, provided by the owner; unset → live quoting refused), `NP_NEAR_RPC_URLS`, `NP_NEARDATA_URL`, `NP_EVM_RPC_URLS_<CHAINID>`, `NP_PRICE_SECONDARY_URL`, `NP_PRICE_SECONDARY_KEY_FILE`, `NP_FX_URL`, `NP_SLIPPAGE_BPS` (json), `NP_CHAINS_FILE`, `NP_ONECLICK_QUOTE_RPS`, `NP_ONECLICK_STATUS_RPS`, `NP_EXPLORER_ENABLED` (false until the owner provides an Explorer token), `NP_PRICING_CURRENCIES` (Stage 1: `usd`), `NP_TIER_B_LIMITS` (`{per_payment_usd: 2000, per_day_usd: 20000}`).
+`NP_ONECLICK_BASE_URL`, `NP_ONECLICK_API_KEY_FILE` (live only; absent in Stage 1 local → unauthenticated quotes with +25 bps, appFees still sent), `NP_TEST_TREASURY_ACCOUNT` (test-mode fee recipient, sandbox only), `NP_PROVIDER_SPLIT` (1Click appFees split, §8.1), `NP_AWAITING_SWEEP_S` (30), `NP_SCREENING_FAIL_CLOSED_USD` (1000), `NP_AGREEMENT_USD` (EVM pool agreement threshold), `NP_IDENTITY_URL` + `NP_SERVICE_CLIENT_SECRET_FILE` (service token: `compliance.screen`, `sandbox.use`), `NP_COMPLIANCE_URL`, `NP_VALKEY_URL` (shared 1Click budgets; down → half per replica), `NP_SANDBOX_BASE_URL`, `NP_SANDBOX_SIGNING_PUBKEY`, `NP_EXPLORER_TOKEN_FILE`, `NP_TREASURY_ACCOUNT` (e.g. `treasury.nearpay.near`, provided by the owner; unset → live quoting refused), `NP_NEAR_RPC_URLS`, `NP_NEARDATA_URL`, `NP_EVM_RPC_URLS_<CHAINID>`, `NP_PRICE_SECONDARY_URL` (default `https://api.coingecko.com/api/v3`; keyless — `NP_PRICE_SECONDARY_KEY_FILE` is not used in v1), `NP_PRICE_SECONDARY_IDS` (json `{asset_id: coingecko id}` overrides), `NP_PRICE_PRIMARY_MAX_AGE_S` (120), `NP_PRICE_SECONDARY_MAX_AGE_S` (300), `NP_FX_URL` (default the ECB daily XML), `NP_FX_GRACE_S` (7200), `NP_FX_MAX_AGE_S` (518400), `NP_TEST_FX_RATES` (json `{currency: "<USD per unit, decimal string>"}`), `NP_STABLE_PEGS` (json `{asset_id: currency}` for non-USD stablecoins, e.g. EURC → `eur`), `NP_OBS_ARCHIVE_STORE` (`file:<dir>` or `s3://<bucket>/<prefix>`; unset → no archive), `NP_OBS_ARCHIVE_AFTER_DAYS` (90), `NP_SLIPPAGE_BPS` (json), `NP_CHAINS_FILE`, `NP_ONECLICK_QUOTE_RPS`, `NP_ONECLICK_STATUS_RPS`, `NP_EXPLORER_ENABLED` (default: true when `NP_EXPLORER_TOKEN_FILE` exists), `NP_PRICING_CURRENCIES` (Stage 1: `usd`; Stage 2 default `usd,eur,gbp,chf,jpy,cad,aud`), `NP_TIER_B_LIMITS` (`{per_payment_usd: 2000, per_day_usd: 20000}`).
 
 **Stage 1 pricing posture:** without a secondary price source configured, non-par settlement assets are disabled (`pricing_unavailable`) — Stage 1 demos settle in USD stablecoins; fiat pricing currency is `usd` only (FX lands in Stage 2).
+
+**Stage 2 pricing posture:** non-par settlement (wNEAR, ETH, BTC, …) is enabled when both price sources are valid and agree (§8.2); non-USD fiat pricing for the currencies in `NP_PRICING_CURRENCIES` with ECB rates inside their staleness bound. Either source failing disables only what needs it (HLD §10).
 
 ## 12. Security
 
@@ -365,7 +437,7 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid
 
 ## 15. Tests
 
-- Unit: status mapping table; pricing (par, depeg, FX fallback, rounding down); route classification; tag allocation; deadline cap; binding derivation.
+- Unit: status mapping table; pricing (par incl. non-USD pegs, depeg, dual-source agreement and freshness, ECB cross rates, TARGET-calendar `valid_until` incl. weekends, Easter and the 6-day cap, stale rate refused, rounding down); route classification; tag allocation; deadline cap; binding derivation.
 - Property: for any sequence of observations (duplicates, reordering, conflicting sources) the execution never leaves a terminal state (`succeeded`, `refunded`, `failed`); `expired_unpaid` only moves to `refunded`, `succeeded` (with evidence) or `held`, and `held` only to `succeeded` (with evidence) or `refunded`; settled ⇒ evidence present; `base + tag` unique among in-flight executions per destination.
 - Contract: 1Click adapter against recorded fixtures (`test/fixtures/oneclick`), including `KNOWN_DEPOSIT_TX`, 404, 400, signature failure.
 - Integration: indexer parsing on recorded mainnet blocks (fixtures from SP-14); EVM watcher against an Anvil fork with Transfer logs; verifier tiers.
@@ -376,9 +448,19 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid
 | Stage | Scope |
 |---|---|
 | 1 | token registry + pricing (par + primary/secondary), `oneclick` + `sandbox` + `direct_intents` providers, executions, hot poller, Explorer feed, NEAR indexer (Intents + NEP-141), EVM watchers for Base/Arbitrum/Ethereum, verifiers NEAR + EVM, minimums, options, evidence API |
-| 2 | refunds (`EXACT_INPUT`/`EXACT_OUTPUT` legs), reconciliation evidence, observation archive |
+| 2 | refunds (`EXACT_INPUT`/`EXACT_OUTPUT` legs; route shapes owned by payments), secondary prices + ECB FX (non-par settlement, multi-currency pricing, §8.2), Explorer feed with the owner token (§8.5), reconciliation evidence (§8.10), observation archive (§8.11), ops reads + reverify (§6) |
 | 4 | Solana + Bitcoin watchers/verifiers, vault event forwarding hardening |
 
 ## 17. Ops CLI (Stage 1)
 
 `docker compose -p nearpay exec rails-api /nodejs/bin/node dist/ops.js <command>`: `execution-show <ex_… | deposit address>` · `flags` · `flag-set quoting_enabled|cross_chain_enabled true|false <reason>` (RB-01) · `tokens-refresh live|test` · `minimums-refresh`.
+
+## 18. Changes in version 1.3 (step 2.1 contracts, spec 0.1.6)
+
+- **Pricing/FX (§8.2, ADR-0020):** ECB reference rates (fiat FX, cross rates via EUR as exact rationals) and CoinGecko keyless `simple/price` (secondary token price) behind `FxProvider`/`PriceProvider` ports. The 5-minute real-time FX with a 36 h ECB fallback is replaced by a **publication-calendar bound**: valid until the next TARGET working day's 16:00 CET publication + 2 h, capped at 6 days; past it the currency is unavailable (`fx_rate_unavailable`), never silently stale. Dual-source freshness: primary ≤ 120 s (was 60 s, too tight for 1Click's ≈ 1/min refresh), secondary ≤ 300 s. Multi-currency par via `peg_currency` (`NP_STABLE_PEGS`). Contract: `PriceRate`/`FxRate`/`Ratio`, `PriceSnapshot.rates[]`, `GET /internal/fx-rates`, `GET /internal/settlement-estimate`.
+- **Explorer (§8.5):** owner token enables the feed; explicit `statuses`, cursor paging, change detection against `explorer_status`, sandbox mirror for test mode.
+- **Reconciliation evidence (§8.10)** and **observation archive (§8.11)** specified; `GET /internal/evidence/summary`, `listEvidence` `states`/`kind`, `GET /internal/executions/{id}/observations`.
+- **Ops (§6):** `GET /internal/ops/executions` and `POST /internal/executions/{id}/reverify` (new ops scope `rails.verify`) for the console's Verifier holds & executions explorer.
+- **1Click (§3):** the spec accepts the live body (nullish optionals, status-nested quote without `correlationId`); the adapter's normalisation is no longer needed.
+- **CR-15-06:** rails fills `token` (`TokenContract`) on options and assets from the registry's `contract_address` (`erc20` on EVM, `nep141` on NEAR, `native` without a contract).
+

@@ -1,6 +1,6 @@
 # LLD — `nearpay-sandbox`
 
-> Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
+> Version 1.3 (step 2.1, spec 0.1.6: Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -23,6 +23,9 @@ Deterministic simulator for test mode, local development and E2E: a **1Click-com
 | `POST /sim/advance` | — | `{deposit_address, to: deposit\|processing\|success\|refund\|fail}` step control |
 | `POST /sim/intents/simulate` · `/execute` | `simulate_intents` / `execute_intents` | real NEP-413 / ERC-191 / raw Ed25519 signature verification (`@nearpay-internal/intents`), nonces, simulated balances per account (seeded via `/sim/intents/fund`), mainnet rejection messages, atomic batches; named accounts register the first key that signs for them. Emits DIP-4 / NEP-245 events shaped like mainnet: the binding memo of a transfer intent is on the DIP-4 `transfer` event only, the NEP-245 `mt_transfer` carries none (SP-14) |
 | `GET /sim/intents/events?cursor=` | indexer feed | event stream for rails' sandbox indexer adapter |
+| `GET /api/v0/transactions` (Stage 2) | Explorer `/api/v0/transactions` | `ExplorerTransactionsQuery` → `ExplorerTransactionList`: the sandbox's quotes as Explorer rows, newest first, with the scenario's current status; filters `referral`, `statuses` (default without `*_DEPOSIT`, like the Explorer), `startTimestamp`/`endTimestamp` (exclusive, on creation time), `numberOfTransactions` ≤ 1000 and the `lastDepositAddress`/`lastDepositMemo` cursor; `amountIn`/`amountOut` read `0` until settled; no rate limit. Lets rails run its Explorer feed in test mode (rails §8.5) |
+
+**Live 1Click shape (spec 0.1.6):** the `OneClick*` schemas accept `null` for unset optional fields and a status-nested `quoteResponse` without `correlationId` (`OneClickStatusQuoteResponse`). The sandbox serves the live shape: unset optionals as `null` (e.g. `swapDetails.amountOut` before settlement, `appFees[].limitOrderId`), and `GET /v0/status` nests the quote response without `correlationId` and its `quoteRequest` without `quoteWaitingTimeMs`, so adapters are tested against what mainnet sends (`roadmap/open-questions.md`, mainnet findings).
 
 ## 4. Scenario engine
 
@@ -54,7 +57,7 @@ Schema parity: sandbox request/response validated against the same zod schemas a
 
 ## 8. Stage mapping
 
-Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (Stage 2).
+Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (Stage 2). Stage 2: the Explorer mirror and the live 1Click body shape.
 
 ## 9. Ops CLI
 
