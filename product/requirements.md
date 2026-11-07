@@ -1,6 +1,6 @@
 # NearPay — Requirements
 
-> Status: **Accepted v1.0** · IDs are stable; reference them in PRs, ADRs and tests (`FR-PAY-03`).
+> Status: **Accepted v1.0** (FR-CMP-01 amended for v1 by ADR-0020, 2026-11-07) · IDs are stable; reference them in PRs, ADRs and tests (`FR-PAY-03`).
 > MUST / SHOULD / MAY per RFC 2119.
 
 ## 1. Invariants (non-negotiable; every design and PR is checked against these)
@@ -71,8 +71,8 @@
 - **FR-WH-04** Webhook egress MUST go through an SSRF-safe egress proxy from published static IPs.
 
 ### 2.8 Compliance (`compliance`)
-- **FR-CMP-01** KYB through a vendor before live mode; periodic refresh by risk tier.
-- **FR-CMP-02** Screen every settlement destination (on add + daily), every payer origin/refund address (pre-quote) and actual sender addresses (post-deposit).
+- **FR-CMP-01** KYB through a vendor before live mode; periodic refresh by risk tier. **v1 (ADR-0020):** no KYB vendor — the merchant self-declares minimum business details and an ops decision in the console approves them before live mode; vendor KYB and risk-tier refresh return when Q-VEN-01 is reopened.
+- **FR-CMP-02** Screen every settlement destination (on add + daily), every payer origin/refund address (pre-quote) and actual sender addresses (post-deposit). **v1 (ADR-0020):** the screening source is the local OFAC list + blocklist behind a vendor-neutral interface (Q-VEN-02 deferred).
 - **FR-CMP-03** Geo-policy (IP country, configurable lists) on checkout; jurisdiction is undecided, so policy is data, not code.
 - **FR-CMP-04** Case management for hits; actions: block address, suspend merchant, report.
 

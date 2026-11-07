@@ -46,7 +46,7 @@ A payment has exactly three jobs: **move value** from payer to merchant, **prove
 - **Subscriptions** — `send_invoice` renewals on every chain; opt-in `auto_debit` through a non-custodial NEAR vault contract.
 - **AI-agent payments** — x402 facilitator (instant NEAR-Intents transfer scheme + cross-chain deposit scheme), x402 middleware, MCP server.
 
-**Compliance**: automated address screening on every payment + vendor KYB before live mode.
+**Compliance**: automated address screening on every payment + KYB before live mode (v1: local OFAC list and self-declared business details approved by ops — ADR-0020).
 
 **Revenue**: in-flight basis-point fee taken through NEAR Intents `appFees`, routed directly to the NearPay treasury account (no custody of merchant funds).
 

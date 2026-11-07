@@ -1,6 +1,6 @@
 # ADR-0016: Thin `nearpay` entry repo; NEAR Hackathon compliance
 
-- **Status:** Accepted; decision 5 amended by ADR-0017 (agent pushes feature branches and opens pull requests) · **Date:** 2026-11-05 · **Amends:** ADR-0001 (adds one repo; polyrepo stays)
+- **Status:** Accepted; decision 5 amended by ADR-0017 (agent pushes feature branches and opens pull requests) and ADR-0020 (lead agent merges pull requests); decision 7 amended by ADR-0020 (one v1 mainnet demo replaces the Stage 1 demo) · **Date:** 2026-11-05 · **Amends:** ADR-0001 (adds one repo; polyrepo stays)
 
 ## Context
 NearPay is submitted to the NEAR Hackathon (rules: https://nearhackathon.com/HACKATHON.md, read 2026-11-05). The submission takes exactly **one** public repo URL (unique per repo), repos must be public by **2026-11-14 23:59 UTC**, every repo needs a LICENSE, and the README must let a machine reader and a human reproduce the product ("do X → see Y", no marketing). Libraries, templates and AI-generated code must be listed in the README. The owner rejected a monorepo and chose a thin entry repo.

@@ -17,9 +17,10 @@
 | [0013](ADR-0013-typescript-rust.md) | TypeScript services/frontends, Rust contracts | Accepted |
 | [0014](ADR-0014-auth-gateway.md) | Traefik gateway + ForwardAuth, internal JWTs | Accepted |
 | [0015](ADR-0015-v1-single-host-compose.md) | v1: every service a container in one Compose stack, single host | Accepted |
-| [0016](ADR-0016-entry-repo-and-hackathon.md) | Thin `nearpay` entry repo; NEAR Hackathon compliance | Accepted (decision 5 amended by 0017) |
-| [0017](ADR-0017-git-workflow.md) | Git workflow: `main` + feature branches merged by pull request | Accepted |
+| [0016](ADR-0016-entry-repo-and-hackathon.md) | Thin `nearpay` entry repo; NEAR Hackathon compliance | Accepted (decision 5 amended by 0017 and 0020; decision 7 amended by 0020) |
+| [0017](ADR-0017-git-workflow.md) | Git workflow: `main` + feature branches merged by pull request | Accepted (decisions 3–5 amended by 0020: merges delegated to the lead agent) |
 | [0018](ADR-0018-list-filters-not-search.md) | Typed filters on list endpoints instead of search endpoints | Accepted |
 | [0019](ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites | Accepted |
+| [0020](ADR-0020-v1-delivery-and-vendor-scope.md) | v1 by 2026-11-14: test-mode stage gates + one mainnet demo, self-declared KYB, local screening, keyless FX/prices, AI vault audits, merges delegated to the lead agent | Accepted |
 
 New ADRs copy [ADR-0000-template.md](ADR-0000-template.md). Never edit an accepted ADR's decision — supersede it.

@@ -95,7 +95,7 @@ flowchart TB
 
 ## 5. Directory structures
 
-Each repo additionally contains `README.md`, `AGENTS.md` and `.github/CODEOWNERS` (money-critical paths need two human approvals — T-15).
+Each repo additionally contains `README.md`, `AGENTS.md` and `.github/CODEOWNERS` (money-critical paths need two human approvals — T-15; in v1 the lead agent reviews and merges them with required green checks, ADR-0020).
 
 ### nearpay-brain
 
