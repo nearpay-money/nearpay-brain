@@ -1,6 +1,6 @@
 # LLD — `nearpay-notify`
 
-> Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
+> Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -35,8 +35,13 @@ Retention: messages are deleted after `NP_MESSAGE_RETENTION_DAYS` (90). A sent `
 | `auth.magic_link` | identity `POST /internal/messages` | user |
 | `account.welcome` | `evt.identity.account.created` | owner |
 | `security.destination_pending` · `_activated` · `_disabled` · `_blocked` | `evt.identity.settlement_destination.*`, `evt.compliance.destination.blocked` | all owners/admins |
-| `security.member_changed` | `evt.identity.member.*` | owners |
-| `kyb.decision` | `evt.compliance.kyb.*` | owners |
+| `security.member_changed` | `evt.identity.member.added` · `.removed` · `.role_changed` (step 2.1; `MemberEvent` has ids only — names/emails via identity recipients) | owners |
+| `team.invitation` (step 2.1) | identity `POST /internal/messages` (`TeamInvitationMessage`: link, account name, role, 7-day validity) | invitee |
+| `ops.enrolment` (step 2.1) | identity `POST /internal/messages` (`OpsEnrolmentMessage`, from `operator-add`) | operator |
+| `security.destination_approval` (step 2.1) | `evt.identity.settlement_destination.pending_approval` | owners/admins other than the creator |
+| `kyb.submitted` (step 2.1) | `evt.compliance.kyb.submitted` | owners |
+| `kyb.decision` | `evt.compliance.kyb.approved` · `.rejected` · `.needs_info` (step 2.1: shows `requested_info` for `needs_info`; never `reason`) | owners |
+| `ops.approval_requested` (step 2.1) | `evt.compliance.account.action_requested`, `evt.sentinel.kill_switch.release_requested` | security contacts (config) |
 | `account.suspended` · `account.reinstated` | `evt.compliance.account.*` | owners |
 | `review.opened` · `review.closed` | `evt.compliance.review.*` | owners/admins |
 | `payment.receipt` | `evt.payments.payment_intent.succeeded` when the session has a customer email and the account enables receipts; test-mode receipts only when `NP_TEST_MODE_RECEIPTS=true` (default `false`; Compose local sets `true` because Mailpit catches every mail) | customer |
@@ -56,7 +61,7 @@ Recipient resolution (never from event payloads, which carry no PII): identity `
 
 | Method & path | Caller (scope) | Request → Response |
 |---|---|---|
-| `POST /internal/messages` | identity, billing (`notify.send`) | `{template, to, variables, locale?, dedupe_key}` → `202 {message_id}` |
+| `POST /internal/messages` | identity, billing (`notify.send`) | `{template, to, variables, locale?, dedupe_key}` → `202 {message_id}`; templates `auth.magic_link`, `team.invitation`, `ops.enrolment` (step 2.1; links with single-use tokens never travel in events). The invitation mail names the account, never the inviter's email; KYB mails never show internal reasons |
 
 ## 6. Sending
 
@@ -72,4 +77,4 @@ Template snapshot tests per locale; dedupe; suppression; provider fallback; reci
 
 ## 9. Stage mapping
 
-Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link, welcome, security destination emails, KYB decision, suspension, reviews, payment receipt, kill switch, audit finding, webhooks endpoint disabled). Stage 2: refund receipts, member emails. Stage 3: billing templates. Stage 5: Postmark/SES, bounce handling.
+Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link, welcome, security destination emails, KYB decision, suspension, reviews, payment receipt, kill switch, audit finding, webhooks endpoint disabled). Stage 2: refund receipts (payments), member, invitation, destination-approval, KYB-submitted, operator-enrolment and approval-request emails (step 2.1). Stage 3: billing templates. Stage 5: Postmark/SES, bounce handling.
