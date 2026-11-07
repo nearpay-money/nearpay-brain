@@ -1,6 +1,6 @@
 # LLD — `nearpay-notify`
 
-> Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
+> Spec 0.2.1 update (spec 0.2.1: recovery and secret-rotation mails, recipients by user, `created_by` on destinations — §"Spec 0.2.1 contract changes") · Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -87,3 +87,10 @@ Template snapshot tests per locale; dedupe; suppression; provider fallback; reci
 ## 9. Stage mapping
 
 Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link, welcome, security destination emails, KYB decision, suspension, reviews, payment receipt, kill switch, audit finding, webhooks endpoint disabled). Stage 2: refund receipts (payments), member, invitation, destination-approval, KYB-submitted, operator-enrolment and approval-request emails (step 2.1 contracts; implemented in step 2.2 with the brand restyle and self-declared KYB wording). Stage 3: billing templates. Stage 5: Postmark/SES, bounce handling.
+
+## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
+
+- `security.recovery` on **`evt.identity.user.recovered`**: per account in `account_ids`, owners (and the recovered user via `notification-recipients?user=`), showing `lock_until`.
+- `webhooks.secret_rotated` on **`evt.webhooks.endpoint.secret_rotated`**: developers + owners, URL and `previous_secret_expires_at` (never the secret).
+- `notification-recipients` accepts `user` (one member, any role) — e.g. to mail the affected member of a `member.*` event.
+- `InternalSettlementDestination.created_by` is available for destination mails (e.g. excluding the creator).

@@ -1,6 +1,6 @@
 # LLD — SDKs and tools (`nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site`)
 
-> Version 1.5 (step 2.3, site: custom Astro docs instead of Starlight for the strict CSP, build-time reference/error pages, reference scope, marketing first version §4–§5) · Version 1.4 (step 2.3, spec 0.2.0: full node SDK — Stage 2 resources, per-route retry policy, tolerant parsing, auto-pagination, refund signers, rotation overlap §1) · Version 1.3 (step 1.4, spec 0.1.5: node delivery log binding §1; agentkit `extra.deadline`, `replayed` and tolerant parsing §2) · Version 1.2 (step 1.3 implementation findings folded into §1, §2, §6) · Version 1.1 audited (`audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
+> Spec 0.2.1 update (spec 0.2.1: `EventDataObject` covers refunds, accounts and reviews — §"Spec 0.2.1 contract changes") · Version 1.5 (step 2.3, site: custom Astro docs instead of Starlight for the strict CSP, build-time reference/error pages, reference scope, marketing first version §4–§5) · Version 1.4 (step 2.3, spec 0.2.0: full node SDK — Stage 2 resources, per-route retry policy, tolerant parsing, auto-pagination, refund signers, rotation overlap §1) · Version 1.3 (step 1.4, spec 0.1.5: node delivery log binding §1; agentkit `extra.deadline`, `replayed` and tolerant parsing §2) · Version 1.2 (step 1.3 implementation findings folded into §1, §2, §6) · Version 1.1 audited (`audits/sdks-and-tools.md`) · Foundations `00-foundations.md` · API conventions
 
 ## 1. `@nearpay/node` (Stage 1 subset, full in Stage 2)
 
@@ -59,3 +59,7 @@ Astro static marketing site at `nearpay.money`: product, pricing (from fee sched
 ## 6. Tests
 
 SDK: contract tests against spec fixtures (node: every method also against an in-process spec-validating mock with strict request parsing, idempotent replay and response-schema checks, `test/support/spec-mock.ts`); webhook and agent-signer vectors from `nearpay-spec/test-vectors` (same files used by `nearpay-webhooks` and `nearpay-agentpay`); x402 middleware E2E against sandbox in testbed. **Contract-test pattern for SDKs:** a ~60-line fake gateway maps `Bearer sk_test_…` to `mintTestToken({ptype: "secret_key"})` and forwards to kit `mockPeer` per owning service, so the real service bootstrap validates requests and checks responses without containers (`mockPeer` handlers must be `async`).
+
+## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
+
+- `EventDataObject` now includes `Refund`, `Account`, `PublicReview`. `x402Verify`/`x402Settle` remain `idempotent: false` (no `Idempotency-Key`); the SDK may retry settle with the same payload (idempotent on its hash).

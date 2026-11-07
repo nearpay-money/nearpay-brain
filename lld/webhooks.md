@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.6 (step 2.2 implementation: mode-less `account.updated` → one event per mode, review skip, INV-8 mode check §4/§6; `resend_no` and events unique per mode §3; rotation transition, `secrets.expire` job, resend targets/limits §5–§6) · Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Spec 0.2.1 update (spec 0.2.1: `evt.webhooks.endpoint.secret_rotated` — §"Spec 0.2.1 contract changes") · Version 1.6 (step 2.2 implementation: mode-less `account.updated` → one event per mode, review skip, INV-8 mode check §4/§6; `resend_no` and events unique per mode §3; rotation transition, `secrets.expire` job, resend targets/limits §5–§6) · Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -166,3 +166,7 @@ Signature vectors shared with `@nearpay/node` verify helper; property tests (ste
 | 1 | endpoints CRUD, ingest for payments + agentpay events, dispatch with HMAC + Ed25519, retries, events API, signing keys, egress proxy, delivery log (`GET …/deliveries`, step 1.4, spec 0.1.5) |
 | 2 | refunds (payments' types) / account / review events, secret rotation, resend (step 2.1 contracts) |
 | 3 | billing/mandate events, `GET /v1/events/stream` for CLI |
+
+## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
+
+- `rotateWebhookEndpointSecret` also emits **`evt.webhooks.endpoint.secret_rotated`** (`EndpointSecretRotatedEvent {endpoint_id, account_id, url, previous_secret_expires_at, actor_user_id}`, never the secret) through the outbox in the same transaction; consumer notify.
