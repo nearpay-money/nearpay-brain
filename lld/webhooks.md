@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.6 (step 2.2 implementation: mode-less `account.updated` → one event per mode, review skip, INV-8 mode check §4/§6; `resend_no` and events unique per mode §3; rotation transition, `secrets.expire` job, resend targets/limits §5–§6) · Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -30,13 +30,15 @@ create table webhook_endpoints (
 create index we_account on webhook_endpoints (account_id, livemode) where status = 'enabled';
 
 create table webhook_endpoint_transitions (… per foundations §7, append-only …);
--- causes: created, merchant_disabled, merchant_enabled, deleted, failing_72h (actor webhooks-dispatcher), ops_enabled
+-- causes: created, merchant_disabled, merchant_enabled, deleted, failing_72h (actor webhooks-dispatcher), ops_enabled,
+--         secret_rotated (step 2.2: from_state = to_state, evidence {previous_secret_expires_at})
 
 create table events (
   id uuid primary key, account_id uuid not null, livemode boolean not null, type text not null,
-  source_event_id uuid not null unique, object_type text not null, object_id text not null, object_sequence integer not null,
+  source_event_id uuid not null, object_type text not null, object_id text not null, object_sequence integer not null,
   data jsonb not null,              -- canonical object snapshot (latest API version shape)
-  previous jsonb, request jsonb, created_at timestamptz not null);
+  previous jsonb, request jsonb, created_at timestamptz not null,
+  unique (source_event_id, livemode));   -- step 2.2 (migration 0002): a mode-less domain event yields one event per mode
 create index events_account on events (account_id, livemode, created_at desc);
 create index events_type on events (account_id, livemode, type, created_at desc);
 create index events_created on events (created_at);   -- purge
@@ -45,9 +47,10 @@ create index events_created on events (created_at);   -- purge
 create table deliveries (
   id uuid primary key,              -- UUIDv7 generated at ingest since step 1.4 (earlier rows: random UUIDs); API id whd_…
   event_id uuid not null references events(id), endpoint_id uuid not null references webhook_endpoints(id),
+  resend_no smallint not null default 0,   -- step 2.2: 0 = ingest/test delivery, 1, 2, … = resends to this endpoint
   status text not null check (status in ('pending','succeeded','failed','abandoned')),
   attempts smallint not null default 0, next_attempt_at timestamptz, last_status_code smallint, last_error text,
-  created_at timestamptz not null default now(), succeeded_at timestamptz, unique (event_id, endpoint_id));
+  created_at timestamptz not null default now(), succeeded_at timestamptz, unique (event_id, endpoint_id, resend_no));
 create index deliveries_due on deliveries (next_attempt_at) where status in ('pending','failed');
 create index deliveries_endpoint on deliveries (endpoint_id, created_at desc);
 
@@ -70,9 +73,9 @@ Retention: events, deliveries and attempts 30 days (daily purge).
 | `evt.billing.subscription.{created,updated,deleted,renewal_upcoming}` | `customer.subscription.<same>` | subscription |
 | `evt.billing.mandate.{activated,collected,insufficient_funds,canceled,exhausted}` | `mandate.<same>` | mandate |
 | `evt.agentpay.agent_payment.{settled,failed}` | `agent_payment.<same>` | agent_payment |
-| `evt.identity.account.updated` | `account.updated` (step 2.1: the catalogue routes it to webhooks) | account (public `Account`) |
+| `evt.identity.account.updated` | `account.updated` (step 2.1: the catalogue routes it to webhooks) | account (public `Account`). Identity emits it with `livemode: null` (an account is neither test nor live): step 2.2 stores **one public event per mode** (distinct `evt_` ids, same `source_event_id`), each fanned out to that mode's endpoints and listed by that mode's events API |
 | `evt.identity.settlement_destination.{cooling_off,activated,disabled}` | `settlement_destination.{pending,activated,disabled}` | settlement_destination |
-| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks) | review — the bus `Review` is rendered with `toPublicReview()` into `PublicReview` (unix times; a review of a rails execution is shown as a review of its payment intent via `Review.payment_intent`; no `payment_intent` → not delivered) |
+| `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks) | review — the bus `Review` is rendered with `toPublicReview()` into `PublicReview` at ingest (unix times; a review of a rails execution is shown as a review of its payment intent via `Review.payment_intent`; no `payment_intent` → no public event at all, acked without a dead letter; a payload that is not a bus `Review` → dead letter) |
 
 Everything else (attempt, execution, internal events) is never exposed. Rendering per endpoint `api_version` is done by version transformers in `@nearpay/spec` (`webhooks/versions/*.ts`). Since spec 0.1.5 CheckoutSession and AgentPayment carry their own `sequence` too (payments and agentpay send their aggregate version). The producer's `sequence` is preferred: ingest stores it as `object_sequence` and rendering keeps it; only an object without a valid one (a producer older than 0.1.5) gets `aggregate.version` (api-conventions §9).
 
@@ -82,11 +85,11 @@ Everything else (attempt, execution, internal events) is never exposed. Renderin
 |---|---|---|
 | `POST /v1/webhook_endpoints` | secret key `webhook_endpoints.write` or session developer+ | `{url (URL policy below), enabled_events, api_version?, description?}` → endpoint + `secret` (`whsec_…`, once); `*` anywhere in `enabled_events` normalises to `["*"]`, duplicates are dropped. The idempotent response (it carries the secret) is stored encrypted with the endpoint-secret KEK |
 | `GET /v1/webhook_endpoints` · `/{id}` · `PATCH` · `DELETE` | same (read/write) | URL changes re-validate SSRF rules |
-| `POST /v1/webhook_endpoints/{id}/rotate_secret` (`rotateWebhookEndpointSecret`, step 2.1) | write | `{expire_previous_in_seconds 0–86400, default 86400}` → endpoint with the new `secret` (once) and `previous_secret_expires_at`; during the overlap the current secret moves to `secondary_secret_enc` and every delivery carries both `v1=` signatures; rotating again during an overlap replaces the secondary with the then-current secret; `0` drops the previous secret at once; the idempotent response is stored encrypted like create's |
+| `POST /v1/webhook_endpoints/{id}/rotate_secret` (`rotateWebhookEndpointSecret`, step 2.1) | write | `{expire_previous_in_seconds 0–86400, default 86400}` → endpoint with the new `secret` (once) and `previous_secret_expires_at`; during the overlap the current secret moves to `secondary_secret_enc` and every delivery carries both `v1=` signatures; rotating again during an overlap replaces the secondary with the then-current secret; `0` drops the previous secret at once; the idempotent response is stored encrypted like create's. Step 2.2: allowed on a disabled endpoint (a leaked secret must be replaceable; deleted → `404`); writes a `secret_rotated` transition; the previous secret signs while `now < secondary_expires_at` (the expiry instant is outside); reads show `previous_secret_expires_at` only inside the overlap (null otherwise); job `secrets.expire` (10 min) erases expired secondaries |
 | `POST /v1/webhook_endpoints/{id}/test` | write | stores a `ping` event (listed by `GET /v1/events`, `object_sequence 0`, no `sequence` injected, `request` = the API request) and delivers it to that endpoint regardless of its subscriptions; disabled endpoint → `409 state_conflict` |
 | `GET /v1/webhook_endpoints/{id}/deliveries` | read | delivery log (spec 0.1.5, Stage 1): cursor list of `WebhookDelivery` summaries (`whd_…`: `webhook_endpoint`, `event`, `event_type`, `status`, `attempts`, `last_status_code`, `last_error`, `next_attempt_at` only while an attempt is due, `succeeded_at`), newest first, last 30 days (hidden before the purge, like events). Keyset paging on `(created_at, id)` because pre-1.4 rows have random UUIDs; a cursor must be a delivery of the same endpoint (`400` otherwise). The endpoint must be the caller's, in its mode, not deleted (`404`) |
 | `GET /v1/events` · `/{id}` | `events.read` | filters `type`, `created[gte/lte]`; rendered in the latest API version (`2026-11-01`: webhooks has no outbound edge to read the account's pinned version); events older than 30 days are hidden even before the purge runs |
-| `POST /v1/events/{id}/resend` (`resendEvent`, step 2.1) | write | `{endpoint?}` → `202 EventResend {event, deliveries[]}`: one new delivery (UUIDv7, fresh schedule) per endpoint — the given one (must be the caller's, same mode, enabled, else `409 state_conflict`; subscriptions ignored, like `test`) or every enabled endpoint subscribed to the type; `deliveries.unique(event_id, endpoint_id)` becomes `unique(event_id, endpoint_id, resend_no)` with `resend_no smallint not null default 0`; events older than 30 days are `404` |
+| `POST /v1/events/{id}/resend` (`resendEvent`, step 2.1) | write | `{endpoint?}` → `202 EventResend {event, deliveries[]}`: one new delivery (UUIDv7, fresh schedule, `created_at` now so the 72 h window restarts) per endpoint — the given one (not the caller's or other mode → `404 resource_missing` `param endpoint`; disabled → `409 state_conflict`; subscriptions ignored, like `test`) or every enabled endpoint subscribed to the type (step 2.2: a `ping` only to the endpoint it tested, never to `*` subscribers; none → `202` with `deliveries: []`); `deliveries.unique(event_id, endpoint_id)` becomes `unique(event_id, endpoint_id, resend_no)` with `resend_no smallint not null default 0`; step 2.2: a resend takes `max(resend_no of the pair, 0) + 1` while holding `FOR UPDATE` on the event row (concurrent resends serialise); a pair at 32 767 → `409 state_conflict`; events older than 30 days are `404` |
 | `GET /v1/events/stream` | `events.read` (test mode or session) | SSE of new events (CLI `listen`, Stage 3) |
 | `GET /v1/webhook_signing_keys` | anonymous | JWKS of Ed25519 keys |
 
@@ -99,12 +102,16 @@ Endpoint create/update errors: `url_invalid` (fails the URL policy) and `event_t
 **Ingest** (`webhooks-ingest`, consumers `webhooks--EVT_*` with filters from §4):
 ```
 tx: inbox.consume(evt.id); m = mapping(evt.subject) or ack-skip
-    envelope without account/livemode, or data.object invalid against the type's public schema → dead letter ('consumer:webhooks') + ack
-    insert events(source_event_id=evt.id, type, data=evt.data.object, previous,
-                  object_sequence=evt.data.object.sequence (integer ≥ 0) ?? evt.aggregate.version,
-                  created_at=evt.occurred_at) on conflict do nothing
-    for ep in endpoints(account, livemode) enabled at ingest time where '*' ∈ enabled_events or type ∈ enabled_events:
-        insert deliveries(id=uuidv7(), pending, next_attempt_at=now())   // disabled endpoints get none; no backfill on re-enable
+    envelope without account → dead letter ('consumer:webhooks') + ack
+    modes = [evt.livemode], or [false, true] when livemode is null and the type is mode-less (account.updated); else dead letter
+    per mode: object = public object (reviews: toPublicReview(Review, mode); null → ack, no event);
+        invalid against the type's public schema, or object.livemode ≠ mode (INV-8) → dead letter + ack
+        (all modes are rendered and checked before anything is inserted)
+    per mode: insert events(source_event_id=evt.id, livemode=mode, type, data=object, previous,
+                  object_sequence=object.sequence (integer ≥ 0) ?? evt.aggregate.version,
+                  created_at=evt.occurred_at) on conflict (source_event_id, livemode) do nothing
+        for ep in endpoints(account, mode) enabled at ingest time where '*' ∈ enabled_events or type ∈ enabled_events:
+            insert deliveries(id=uuidv7(), resend_no=0, pending, next_attempt_at=now())   // disabled endpoints get none; no backfill on re-enable
 ```
 **Dispatch** (`webhooks-dispatcher`):
 ```
@@ -116,7 +123,8 @@ loop: claim = update deliveries set next_attempt_at = now + lease from (select �
   per-endpoint concurrency ≤ 5 (Valkey sorted set 'wh:<ep>' whose members expire after 30 s, acquired by a Lua script;
        Valkey down → 1 in flight per endpoint per dispatcher replica); endpoint at its limit → postpone the claimed
        delivery 0.5–2 s without counting an attempt
-  body = JSON(render(event, endpoint.api_version)); t = now_unix
+  t = now_unix; secrets = [current] + [secondary if now < secondary_expires_at]   // one instant for both (step 2.2)
+  body = JSON(render(event, endpoint.api_version))
   sig = 't='+t+',v1='+hex(hmac(secret, t+'.'+body))[+',v1='+secondary]+',v1a='+b64url(ed25519(t+'.'+body))+',kid='+kid
   POST url via egress proxy (timeout 10 s, no redirects) headers: Content-Type 'application/json; charset=utf-8',
        User-Agent 'NearPay-Webhooks/1.0', NearPay-Signature, NearPay-Event-Id, NearPay-Event-Type
@@ -128,7 +136,7 @@ loop: claim = update deliveries set next_attempt_at = now + lease from (select �
   proxy refusals (non-200 CONNECT, or X-Smokescreen-Error on an absolute-form response) and timeouts are recorded as
   attempts with status_code null and an error — never as the merchant's status
 ```
-A merchant or ops re-enable clears `failing_since` (a new streak). Job `deliveries.abandon` (every 10 min) abandons deliveries past `created_at + 72 h` that the dispatcher never reaches (disabled endpoints). Default signing `kid` = `wh-` + 12 hex of SHA-256(raw public key); `NP_WEBHOOK_SIGNING_KID` overrides (deploy's `keys.env` derives `local-…` for the same key).
+A merchant or ops re-enable clears `failing_since` (a new streak). Job `secrets.expire` (every 10 min, step 2.2) nulls `secondary_secret_enc`/`secondary_expires_at` once expired. Job `deliveries.abandon` (every 10 min) abandons deliveries past `created_at + 72 h` that the dispatcher never reaches (disabled endpoints). Default signing `kid` = `wh-` + 12 hex of SHA-256(raw public key); `NP_WEBHOOK_SIGNING_KID` overrides (deploy's `keys.env` derives `local-…` for the same key).
 Event payload envelope: `api-conventions.md` §9 (object includes `sequence`).
 
 ## 7. Events
@@ -149,7 +157,7 @@ All deliveries use the `egress-proxy` container (Smokescreen): deny RFC 1918, lo
 
 ## 11. Tests
 
-Signature vectors shared with `@nearpay/node` verify helper; retry schedule; abandonment at 72 h (fake clock); endpoint disable; SSRF table (each blocked range); version rendering; ingest idempotency on duplicate domain events.
+Signature vectors shared with `@nearpay/node` verify helper; property tests (step 2.2): rotation window (a delivery verifies under exactly the current secret plus the previous one strictly before its expiry, at every instant, over random rotation sequences) and resend allocation (no `(event, endpoint, resend_no)` twice; contiguous numbers); retry schedule; abandonment at 72 h (fake clock); endpoint disable; SSRF table (each blocked range); version rendering; ingest idempotency on duplicate domain events.
 
 ## 12. Stage mapping
 
