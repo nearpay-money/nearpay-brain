@@ -34,6 +34,13 @@
 | Fees: unauthenticated +25 bps. With partner JWT, `appFees` total ≤ 500 bps, **split 50/50 with 1Click**, 1Click half min 20 bps (1 bp on stable/same-asset routes). Fee is taken from the input token. Quote improvement within ~30 min shared 50/50. | NearPay sets total `appFees` = its all-in price; net revenue ≈ half. Fee schedule is data, not code. |
 | ToS: integrator must KYB, screen end users (sanctions/AML), keep end-user terms, pass the **unmasked originating wallet** as refund address, not cache API data > 24 h (except tx history), not present 1Click as a payment processor. Fees non-refundable; recovery of misdirected funds discretionary (may refuse < USD 300); liability cap ≈ max(USD 1,000, 12-month fees). | Compliance service is mandatory; refund address is a hard input; risk register R-01. |
 
+**Live behaviour vs the OpenAPI (seen on mainnet, 2026-11-07; real body in nearpay-sentinel `test/fixtures/oneclick-status-pending-live.json`):**
+- Unset optional fields come back as `null` (`swapDetails.amountOut`, `refundReason`, `quoteRequest.virtualChainRecipient`, …); none are declared nullable. `appFees[]` items carry `limitOrderId: null`.
+- `GET /v0/status` nests `quoteResponse` without `correlationId`, and its `quoteRequest` echo omits `quoteWaitingTimeMs` even though the quote signature covers it.
+- Two deadlines: `quoteRequest.deadline` is when refunds begin (the requested one); `quote.deadline` and `timeWhenInactive` are when the deposit address goes inactive (3 days later).
+- Auth: `X-API-Key` or a JWT as `Authorization: Bearer` (JWT-auth); partner keys issued as JWTs go in the bearer header.
+- `quoteWaitingTimeMs` defaults to 0 (fastest quote); rails sends 3000.
+
 ## 3. NEAR chain
 
 | Fact | Source |

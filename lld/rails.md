@@ -23,7 +23,7 @@ src/domain/pricing/          settlement amount, FX, par policy, depeg guard, rou
 src/domain/token-registry/   token policy (enabled, stable, family), route classes
 src/domain/verification/     tiers, evidence model, comparison rules
 src/providers/port.ts        RouteProvider interface
-src/providers/oneclick/      1Click client (X-API-Key), request/response mapping, signature check (SDK)
+src/providers/oneclick/      1Click client (JWT partner key → Authorization: Bearer, else X-API-Key), live-body normalisation (nulls dropped, nested correlationId), request/response mapping, signature check (SDK)
 src/providers/sandbox/       same client, sandbox base URL + sandbox signature key
 src/providers/direct-intents/ requirement builder for signed Verifier transfers (no swap)
 src/trackers/hot-poller/     scheduler, token buckets, status application
@@ -326,7 +326,7 @@ For `(chain, asset)` hourly: dry quote `EXACT_OUTPUT` of USD 100 equivalent paid
 
 | Target | Timeout | Budget | Notes |
 |---|---|---|---|
-| 1Click `/v0/quote` | 6 s | `NP_ONECLICK_QUOTE_RPS` (5) | `X-API-Key`; breaker |
+| 1Click `/v0/quote` | 6 s | `NP_ONECLICK_QUOTE_RPS` (5) | partner key (JWT → `Authorization: Bearer`); breaker |
 | 1Click `/v0/status` | 4 s | `NP_ONECLICK_STATUS_RPS` (10) | 404 for unknown address → `held` after 3 tries |
 | 1Click `/v0/deposit/submit` | 4 s | shared with status | best effort |
 | 1Click `/v0/tokens` | 5 s | 2/min | no auth |
