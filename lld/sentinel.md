@@ -1,6 +1,6 @@
 # LLD — `nearpay-sentinel`
 
-> Version 1.3 (step 1.2 implementation findings folded: data §4, R4/R5/R6 and classes §5, audit §8.1, cache §8, configuration §10, ops CLI §15) · Version 1.1 audited (`audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
+> Version 1.4 (mainnet findings 2026-11-07: R1 normalisation, R2 waiting-time echo, R4 deadline semantics; sentinel #2/#3) · Version 1.3 (step 1.2 implementation findings folded: data §4, R4/R5/R6 and classes §5, audit §8.1, cache §8, configuration §10, ops CLI §15) · Version 1.1 audited (`audits/sentinel.md`) · HLD §6 (two-party release), ADR-0010, ADR-0012, security T-03 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -65,13 +65,13 @@ Request (from checkout): `{livemode, kind, attempt_id, attestation_ticket, depos
 
 | # | Check | Failure class |
 |---|---|---|
-| R1 | `GET /v0/status?depositAddress&depositMemo` (live: 1Click with sentinel's own key; test: sandbox) returns 200 | `unavailable` (503) |
-| R2 | `verifyQuoteSignature(status.quoteResponse)` (live: SDK; test: sandbox key) | `security` |
+| R1 | `GET /v0/status?depositAddress&depositMemo` (live: 1Click with the partner key, a JWT sent as `Authorization: Bearer`; test: sandbox) returns 200 and a body that validates after normalisation (live 1Click sends `null` for unset optional fields and omits the nested `quoteResponse.correlationId`: nulls are dropped, the nested trace id takes the top-level one) | `unavailable` (503) |
+| R2 | `verifyQuoteSignature(status.quoteResponse)` (live: SDK; test: sandbox key). The status echo omits the signed `quoteRequest.quoteWaitingTimeMs`; when the echo has none and the signature does not verify as echoed, it is re-checked with rails' value (3000) put back and nothing else | `security` |
 | R3 | `quoteRequest.referral == 'nearpay'` | `security` |
-| R4 | `quote.depositAddress == deposit.address`, memo equal, `quoteRequest.originAsset == deposit.origin_asset_id`, `quote.amountIn == deposit.amount_in`, `quote.deadline` and `deposit.deadline` equal as instants, and `deposit.chain` is the provider's deposit chain: `INTENTS` deposit → `near:mainnet`; otherwise the origin asset's chain when derivable (omft bridge prefix, or NEP-141 → NEAR). An EVM address is valid on every EVM chain, so the chain must be checked, not only the address | `security` |
+| R4 | `quote.depositAddress == deposit.address`, memo equal, `quoteRequest.originAsset == deposit.origin_asset_id`, `quote.amountIn == deposit.amount_in`, `quoteRequest.deadline` (signed; when refunds begin) and `deposit.deadline` equal as instants, `quote.deadline` (when the address goes inactive; 3 days later on live 1Click) not before it, and `deposit.chain` is the provider's deposit chain: `INTENTS` deposit → `near:mainnet`; otherwise the origin asset's chain when derivable (omft bridge prefix, or NEP-141 → NEAR). An EVM address is valid on every EVM chain, so the chain must be checked, not only the address | `security` |
 | R5 | registry rows (identity view v2) with `address_norm == norm(quoteRequest.recipient)`, `asset_id == quoteRequest.destinationAsset`, matching `type`/`livemode`, `status = active`: exactly one → pass; several → prefer the single `signature`-verified row, else `ambiguous`; none active but a once-active **disabled** destination matches → `stale` (a merchant disabling a destination mid-checkout must not engage the global kill switch); none at all → `security` | `security` / `ambiguous` / `stale` |
 | R6 | `appFees` (1Click echoes them split 50/50 and does not sign them, rails §8.1): at most 2 entries, total ≤ 500 bps, exactly one entry with `recipient == TREASURY` keeping `≥ total − max(ceil(total × share_bps / 10 000), max(floor_bps, stable_floor_bps))`; a fee-free quote (no entries) passes | `security` |
-| R7 | `status ∈ {PENDING_DEPOSIT, KNOWN_DEPOSIT_TX, INCOMPLETE_DEPOSIT, PROCESSING}` and `deadline > now + 60 s` | `stale` (409) |
+| R7 | `status ∈ {PENDING_DEPOSIT, KNOWN_DEPOSIT_TX, INCOMPLETE_DEPOSIT, PROCESSING}` and `quoteRequest.deadline > now + 60 s` | `stale` (409) |
 
 **`intents_transfer` checks:** registry row with `type='intents_account'`, `address_norm == pay_to`, `asset_id == token`, active, livemode; `fee_to == TREASURY`; `fee_amount ≤ ceil(amount × 500 / 10 000)`; `binding` matches `^np1:[1-9A-HJ-NP-Za-km-z]{43,44}$`; `deadline > now + 30 s`.
 
