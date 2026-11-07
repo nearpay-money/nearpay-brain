@@ -1,6 +1,6 @@
 # LLD — `nearpay-rails`
 
-> Version 1.3 (step 2.1 contracts, spec 0.1.6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, ops reads §6, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
+> Version 1.3 (step 2.1 contracts, spec 0.1.6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
 
 ## 1. Scope
 
@@ -198,8 +198,7 @@ States and 1Click mapping: `domain-model.md` §4.3. Additional rules:
 | `GET /internal/fx-rates?livemode=&currencies=` (Stage 2) | payments, ops (`rails.read`) | `FxRates {base:'usd', livemode, currencies:[FxRate{currency, exponent, available, stale, reference_date, rate: PriceRate}], as_of}` — the accepted pricing currencies (`NP_PRICING_CURRENCIES`, `usd` first) with source, `as_of` and `valid_until` of each rate; a stale rate is shown with `available:false` and never used | |
 | `GET /internal/settlement-estimate?amount=&currency=&asset_id=&settlement_asset=&livemode=` (Stage 2) | payments, ops (`rails.read`) | `SettlementEstimate {pricing, usd_micros, settlement?:{asset_id, amount_base, par}, price_snapshot}` — the §8.2 rules without quoting: payments values non-USD prices in USD micros (minimum, unverified cap) and gets the options `amount_out` | `currency_unsupported`, `asset_unsupported`, `pricing_unavailable`, `fx_rate_unavailable` |
 | `GET /internal/executions/{id}/observations?starting_after=&limit=` (Stage 2) | payments, ops (`rails.read`) | `{data:[ProviderObservation{id obs_, source, provider_status, provider_updated_at, applied, observed_at, payload_sha256, payload \| null, archive \| null}], has_more}` oldest first | |
-| `GET /internal/ops/executions?livemode=&account_id=&state=&held_reason=&kind=&provider=&deposit_address=&created_gte=&created_lte=` (Stage 2) | console (`ops:rails.read`) | `ExecutionPage {data: Execution[], has_more}` newest first — Verifier holds (`state=held`) and the executions explorer | |
-| `POST /internal/executions/{id}/reverify` (Stage 2) | console (`ops:rails.verify`) | `{reason}` → `202`; schedules the verifier now (`verify_at = now()`) for a `held` or `verifying` execution, observation `operator`; never forces a state (INV-2) | `state_conflict` (any other state) |
+| console `/ops/executions…` (Stage 2, routes in the identity-console `/ops/…` table, served by rails) | console (`ops:rails.read`) | executions explorer and Verifier holds (`state=held`) over `Execution`; observations via `ProviderObservationPage`; a reverify action (`verify_at = now()` for a `held`/`verifying` execution, observation `operator`, never forces a state — INV-2) is requested from that table | |
 | `GET /internal/evidence/summary?account_id=&livemode=&day=` (Stage 2) | payments (reconciliation), sentinel, ops (`rails.read`) | `EvidenceSummary` (§8.10) | |
 
 ## 7. Events
@@ -448,7 +447,7 @@ Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): obser
 | Stage | Scope |
 |---|---|
 | 1 | token registry + pricing (par + primary/secondary), `oneclick` + `sandbox` + `direct_intents` providers, executions, hot poller, Explorer feed, NEAR indexer (Intents + NEP-141), EVM watchers for Base/Arbitrum/Ethereum, verifiers NEAR + EVM, minimums, options, evidence API |
-| 2 | refunds (`EXACT_INPUT`/`EXACT_OUTPUT` legs; route shapes owned by payments), secondary prices + ECB FX (non-par settlement, multi-currency pricing, §8.2), Explorer feed with the owner token (§8.5), reconciliation evidence (§8.10), observation archive (§8.11), ops reads + reverify (§6) |
+| 2 | refunds (`EXACT_INPUT`/`EXACT_OUTPUT` legs; route shapes owned by payments), secondary prices + ECB FX (non-par settlement, multi-currency pricing, §8.2), Explorer feed with the owner token (§8.5), reconciliation evidence (§8.10), observation archive (§8.11), console reads (§6) |
 | 4 | Solana + Bitcoin watchers/verifiers, vault event forwarding hardening |
 
 ## 17. Ops CLI (Stage 1)
@@ -460,7 +459,7 @@ Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): obser
 - **Pricing/FX (§8.2, ADR-0020):** ECB reference rates (fiat FX, cross rates via EUR as exact rationals) and CoinGecko keyless `simple/price` (secondary token price) behind `FxProvider`/`PriceProvider` ports. The 5-minute real-time FX with a 36 h ECB fallback is replaced by a **publication-calendar bound**: valid until the next TARGET working day's 16:00 CET publication + 2 h, capped at 6 days; past it the currency is unavailable (`fx_rate_unavailable`), never silently stale. Dual-source freshness: primary ≤ 120 s (was 60 s, too tight for 1Click's ≈ 1/min refresh), secondary ≤ 300 s. Multi-currency par via `peg_currency` (`NP_STABLE_PEGS`). Contract: `PriceRate`/`FxRate`/`Ratio`, `PriceSnapshot.rates[]`, `GET /internal/fx-rates`, `GET /internal/settlement-estimate`.
 - **Explorer (§8.5):** owner token enables the feed; explicit `statuses`, cursor paging, change detection against `explorer_status`, sandbox mirror for test mode.
 - **Reconciliation evidence (§8.10)** and **observation archive (§8.11)** specified; `GET /internal/evidence/summary`, `listEvidence` `states`/`kind`, `GET /internal/executions/{id}/observations`.
-- **Ops (§6):** `GET /internal/ops/executions` and `POST /internal/executions/{id}/reverify` (new ops scope `rails.verify`) for the console's Verifier holds & executions explorer.
+- **Ops (§6):** the console's executions explorer and Verifier holds are `/ops/executions…` routes on the identity-console `/ops/…` table, served by rails over `Execution`/`ProviderObservation`; a reverify action is requested there.
 - **1Click (§3):** the spec accepts the live body (nullish optionals, status-nested quote without `correlationId`); the adapter's normalisation is no longer needed.
 - **CR-15-06:** rails fills `token` (`TokenContract`) on options and assets from the registry's `contract_address` (`erc20` on EVM, `nep141` on NEAR, `native` without a contract).
 
