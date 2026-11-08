@@ -1,6 +1,6 @@
 # LLD — `nearpay-sandbox`
 
-> Version 1.6 (step 4.1, spec 0.4.0: subscription-vault stand-in §3.1, vault scenarios §4.2, data §5, configuration §6, Stage 4 §8; OQ-T-03 resolved) · Version 1.5 (step 3.2b, spec 0.3.1: `SimTx.transfers[].from` §3, documented test addresses of the simulated payer and liquidity provider §4.1) · Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
+> Version 1.7 (step 4.1, spec 0.4.0: Solana and Bitcoin simulation — address and hash formats, `SimTx` chain fields, confirmations, scenarios `08`/`09`, Solana USDT — §10) · Version 1.6 (step 4.1, spec 0.4.0: subscription-vault stand-in §3.1, vault scenarios §4.2, data §5, configuration §6, Stage 4 §8; OQ-T-03 resolved) · Version 1.5 (step 3.2b, spec 0.3.1: `SimTx.transfers[].from` §3, documented test addresses of the simulated payer and liquidity provider §4.1) · Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -64,6 +64,8 @@ Scenario key = last two digits of `scenario_amount` (the fiat amount in minor un
 | `05` | `SUCCESS` but `/sim/chains` returns amount − 1 (short) |
 | `06` | like `00`; a deposit also pays the older open quotes of the same payment (duplicate settlement → overpayment). Stage 2: quotes are grouped by `scenario_group` when present; on refund legs a deposit to one leg also settles the other open legs of the same refund (duplicate refund → payments records a `duplicate` leg). Without `scenario_group` the Stage 1 grouping applies. As implemented (v1.4): group key = `sha256("group|" + kind + "|" + scenario_group)`, else the Stage 1 `sha256(recipient|destinationAsset|refundTo|scenario_amount)`; a payment deposit pays **older** open attempts only (Stage 1), a refund deposit pays **every other** open leg, older or newer; a refund leg's duplicate deposit counts as made **in time**, so an expired leg (deadline passed, still `PENDING_DEPOSIT`) settles `SUCCESS` — the "paid the expired leg and its replacement" case payments must see — while an expired payment attempt is still refunded (`DEPOSIT_AFTER_DEADLINE`, Stage 1). Every scenario applies to refund legs by the refund amount's last two digits (e.g. `02` underpays the leg → the merchant is refunded at the deadline) |
 | `07` | success arrives 5 min after the session's `expires_at` |
+| `08` (Stage 4) | slow finality: the destination tx is recorded not final for 60 s (§10) |
+| `09` (Stage 4) | Solana: a failed destination tx precedes the real one; Bitcoin: the payout is split over two outputs (§10) |
 | refund address contains `sanctioned` | compliance blocks (handled by compliance sandbox rule) |
 
 ### 4.1 Test addresses and transfer senders (v1.5)
@@ -128,3 +130,29 @@ Stage 4 (step 4.2): the subscription-vault stand-in §3.1 with the §4.2 scenari
 ## 9. Ops CLI
 
 `docker compose exec sandbox-api /nodejs/bin/node dist/ops.js <command>`: `intents-fund <account> <token> <amount>` credits a simulated Intents balance (the same `mt_mint` as `POST /sim/intents/fund`; `seed.sh data` funds the demo agent with it, platform §3) · `intents-balance <account> <token>`. Test mode only by construction (the sandbox holds no live data); arguments are validated before the ledger is touched. Missing: a tx-status route, so agentpay cannot recover a sandbox execute that failed in transport (agentpay §7).
+
+## 10. Stage 4 — Solana and Bitcoin simulation (step 4.1, spec 0.4.0)
+
+Rails treats both chains as Tier A (rails §21); test mode must exercise the same verifier rules, so the simulated chains carry the chain-specific fields of `SimTx` (spec 0.4.0). Existing scenarios `00`–`07` apply unchanged to Solana/Bitcoin deposits (payer side), payouts (destination side) and refunds (refund address side).
+
+**Formats** (as already implemented in `src/simulated-chains/addresses.ts`, `s = seedBytes(seed)`; recorded here as the contract):
+
+| | Solana | Bitcoin |
+|---|---|---|
+| deposit address | `base58(s)` (32 bytes) | P2WPKH `bc1q…` with program `s[0..20]` |
+| tx hash | `base58(seedBytes("tx:"+seed) ‖ seedBytes("tx2:"+seed))` (64 bytes, a signature) | `hex(seedBytes("tx:"+seed))` (txid) |
+| `SimTx.block_ref` | slot `380000000 + seq` | height `900000 + seq` |
+| `transfers[].token_account` | ATA(`to`, mint) for SPL (kit `chains`); null for SOL | — |
+| `transfers[].vout` | — | output index (`0`; scenario `09`: `0` and `2`) |
+| `confirmations` | null | `1` when recorded, `+1` per 30 s (× `NP_SANDBOX_TIME_SCALE`), capped at 6; `finalized = confirmations ≥ 1` |
+
+Rows recorded before v1.6 answer the new fields absent (rails treats absent as unknown). Simulated payer addresses stay as §4.1; the solver address on these chains is `solverAddress(chain)` in the formats above.
+
+**Scenarios added:**
+- `08` — slow finality: the destination (payout or refund) tx is recorded with `finalized: false` for 60 s (Bitcoin: `confirmations: 0`, then the normal growth), then final. Rails retries (§8.8) and must not emit evidence early; with a settlement ≥ USD 1,000 on Bitcoin it needs the second confirmation 30 s later.
+- `09` — Solana: `destinationChainTxHashes` lists two signatures; the first is recorded `failed: true` with no transfers, the second carries the payout (rails must skip the failed one). Bitcoin: the payout tx pays the destination in two outputs (`vout` 0 and 2; amounts `floor(a/2)` and the rest) plus a solver change output `vout` 1 (rails must sum). Other chains: like `00`.
+
+**Registry:** add Solana USDT (`nep141:sol-c800a4bd850783ccb82c2b2c7e84175443606352.omft.near`, 6 decimals, `contractAddress` `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`, price 1) next to Solana USDC, SOL and BTC; every `sol-` entry must satisfy the SPL id rule (rails §21.1, a unit test against `chains-solana-bitcoin.json`).
+
+**Scenario suffixes in use:** `00`–`09` (payments/refunds), `91`–`94` (vault stand-in, OQ-T-03).
+
