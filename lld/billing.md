@@ -175,3 +175,4 @@ Made while building `nearpay-billing` against spec 0.3.0; not decided by §1–�
 14. **Numbering.** Prefix = first 6 `[A-Z0-9]` of the NFKD-upper-cased display name (`INV` if none) + `L`/`T`, fixed by the first allocation of the account and mode.
 15. **Metadata updates replace the whole map** (as in payments).
 16. **Consumed subjects** follow the spec catalogue: `evt.payments.checkout_session.expired` (not `payment_intent.expired`, §6) clears the stored session.
+17. **Job time.** Every job payload carries its scheduled time `at`; reminder, overdue, exhaustion and renewal handlers decide at `max(now, at)`, so a job the database starts a moment before the service clock reaches it (clock skew) still acts; a renewal that is genuinely not due fails and is retried by the job runner, never dropped.
