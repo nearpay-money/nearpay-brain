@@ -42,6 +42,10 @@
 - ➖ **No human reviews money-path code before it reaches `main`.** A defect that the lead agent and CI both miss reaches the v1 demo build (T-15 and R-09 residuals rise from Low to Medium). Remaining human controls: the owner runs and watches the v1 mainnet demo, signs every mainnet transaction and deployment, and can audit the merged history at any time. **A human review of money-path diffs is recommended before material volume.**
 - ➖ The brain and per-repo `AGENTS.md` files still say "human review on money paths". They must be read through this ADR until they are updated.
 
+## Addendum — owner decisions 2026-11-08
+- **Approver tenure stays 7 d / 30 d** (identity §5 two-approver rule, v1.8 audit fix): a new owner/admin's approval of a settlement destination counts after 7 days, or after 30 days when two or more other managers held the role in the 30 days before the grant. The owner chose it over a plain 7-day wait, accepting that newly added managers in established teams wait a month before approving payout-wallet changes.
+- **Website hero fee example: $0.25** (0.50% stable pair on a $50 example), not the Figma's $0.49.
+
 ## Alternatives considered
 - **Keep per-stage mainnet demos.** This needs owner time and funds four times in one week, and it makes the stages run one after another. The owner rejected it.
 - **Integrate a KYB vendor and a screening vendor (Sumsub/Persona, Chainalysis/TRM).** Contracts, credentials and onboarding are human-only and take longer than the window, and per-check fees apply before there is revenue.
