@@ -462,6 +462,12 @@ execution events (version-checked, like §8.3; matched by refund_legs.execution_
 | 2 | refunds (+ legs, dashboard signing), payment links, customers, `POST /v1/payment_intents`, richer list filters on payment intents (ADR-0018), review accept/reject, reconciliation — contracts in §17 |
 | 3 | internal invoice sessions for billing — contracts in §20 |
 
+## 16.1 Stage 3 additions for agent commerce (step 3.1, spec 0.3.0)
+
+- **`payCheckoutSessionTestHelper`** `POST /v1/test_helpers/checkout_sessions/{id}/pay` (test mode only; secret key, `restricted_key:checkout_sessions.write`, or session owner/admin/developer; idempotent) → `202 TestHelperPayment {checkout_session, payment_intent, payment_attempt, outcome}`. Runs §8.2 for the session without Turnstile: `method: route_quote`, `origin_asset_id` = the given one or the first available sandbox option, `refund_to` = the sandbox test address of the origin chain (sandbox §4); then, unless `outcome: none`, sandbox deposit (`amount_in`, default the quoted one) and advance to `success` / `fail` / `refund` (the same steps as `advancePaymentAttempt`). Works for any open session, including invoice sessions (`source: invoice`, §20). Errors as §8.2 (`session_not_open`, `attempt_in_flight`, `too_many_attempts`, `asset_unsupported`, `rail_unavailable`) and `livemode_forbidden`. Backs `nearpay trigger` (sdks-and-tools §3).
+- `advancePaymentAttempt` also admits `restricted_key:checkout_sessions.write` and `simulateRefundDeposit` `restricted_key:refunds.write` (the CLI's restricted test key).
+- **Executions not owned by payments.** Rails executions created by agentpay (cross-chain x402, rails §20) arrive on the same `evt.rails.execution.*` subjects with `owner: agentpay`: the consumer (§8.3) acks them without effect (no dead letter). Reconciliation calls `listEvidence` with `owner=payments`.
+
 ## 17. Stage 2 contracts (step 2.1, `nearpay-spec` 0.2.0)
 
 Spec modules: public `refunds.ts`, `payment-links.ts`, `customers.ts`, `reviews.ts`, additions in `payments.ts`; internal `payments.ts`, refund legs in `rails.ts`, relay in `services.ts`, `sandbox.ts`; events `evt.payments.refund.*`. Decisions made by the contract (not in earlier versions of this LLD):
