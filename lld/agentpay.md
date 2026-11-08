@@ -1,6 +1,6 @@
 # LLD — `nearpay-agentpay`
 
-> Version 1.8 (step 3.1, spec 0.3.0: cross-chain x402 `exact` + `near-intents` on `/x402/near-intents/*` — §3.1, data §4.1, API §5, events §8, configuration §11) · Version 1.7 (spec 0.2.1 implementation: unknown kill switch fails closed, boot read, x402 screen amount — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: `signed_intent_mismatch` declared, `AgentPayment.refund`, kill-switch read at boot — §"Spec 0.2.1 contract changes") · Version 1.6 (stage 2 audit finding 11: the public payer-route fallback is removed — the payer session comes only from payments' internal route, a `404` is `503 rail_unavailable` §5/§10) · Version 1.5 (step 2.2 implementation: refund relay checks the signed payload against payments' issued `next_action` **and** rails' `refund.transfer` (`signed_intent_mismatch`, CR-22-AP-01) §5; `agent_payments.refund_id`, nullable `fee_to` (migration 0003) §4; payer-route fallback rule §5; `sendSignedTx` rejection rule §7; binding-index replays §7) · Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; kill switch blocks live refund relays §8; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
+> Version 1.9 (step 3.2 implementation of `near-intents`: stored entry, binding release rules, quote integrity, single writer of results, settle without kill switch, under-delivery, orphan quotes, migration `0004` details, config formats — §4.2) · Version 1.8 (step 3.1, spec 0.3.0: cross-chain x402 `exact` + `near-intents` on `/x402/near-intents/*` — §3.1, data §4.1, API §5, events §8, configuration §11) · Version 1.7 (spec 0.2.1 implementation: unknown kill switch fails closed, boot read, x402 screen amount — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: `signed_intent_mismatch` declared, `AgentPayment.refund`, kill-switch read at boot — §"Spec 0.2.1 contract changes") · Version 1.6 (stage 2 audit finding 11: the public payer-route fallback is removed — the payer session comes only from payments' internal route, a `404` is `503 rail_unavailable` §5/§10) · Version 1.5 (step 2.2 implementation: refund relay checks the signed payload against payments' issued `next_action` **and** rails' `refund.transfer` (`signed_intent_mismatch`, CR-22-AP-01) §5; `agent_payments.refund_id`, nullable `fee_to` (migration 0003) §4; payer-route fallback rule §5; `sendSignedTx` rejection rule §7; binding-index replays §7) · Version 1.4 (step 2.1, spec 0.2.0: `/internal/relay` `kind: refund` for Intents-account refund legs §5, payments §17; kill switch blocks live refund relays §8; payer session read through payments' internal route `getPayerCheckoutSession`, CR-15-15, §5/§10) · Version 1.3 (step 1.4, spec 0.1.5: `extra.deadline` §3/§6, settle `replayed` and `result_reported_at` §4/§7, `AgentPayment.sequence` §5/§7) · Version 1.2 (step 1.2 implementation findings folded: runtime §2, data §4, checkout routes and relay §5, verify §6, settle and batcher §7, kill switch §8, relayer §9, configuration §11, ops CLI §16) · Version 1.1 audited (`audits/agentpay.md`) · HLD §11 · ADR-0009 · Flows §3, §7 · x402 v2 wire formats `reference/landscape.md` §4 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -143,6 +143,58 @@ alter table agent_payments
 ```
 Purge: operations 30 days after `token_expiry` (the token is rejected before any lookup once expired).
 
+### 4.2 Implementation decisions (step 3.2, v1.9)
+
+Made while implementing §3.1/§4.1 (nearpay-agentpay `stage-3/3.2-agentpay`); everything else is as specified above.
+
+- **Data (`0004_near_intents`).** `issued_requirements.entry jsonb` stores the unquoted entry exactly as issued; the
+  `accepted`/`paymentRequirements` checks compare against it (JCS) **without `extra.indicativeAmount`** (informational,
+  "may change between responses"), and any quoted-only field is `invalid_payment_requirements`. The `max_timeout_s`
+  check becomes per method (intents-transfer 30–300 with `fee_to`; near-intents 60–86 400, `fee_amount = 0`, origin
+  columns and `entry` set). `x402_operations.execution_version` (the `aggregate.version` that recorded the result) is
+  the consumer's stale guard; `check ((status = 'quoted') = (result is null))`. `agent_payments.standard`, `nonces`,
+  `deadline` also drop `not null`; check `ap_transfer_method_shape` (intents-transfer rows keep every signed-payload
+  column and no `origin`; near-intents rows are `x402`, `settled`, with `execution_id` and `origin`, no payload);
+  partial unique index `ap_near_intents_execution (execution_id) where transfer_method = 'near-intents'` (one merchant
+  record per execution). `/x402/verify|settle` only read `method = 'intents-transfer'` requirements.
+- **Issuance.** Every origin is validated (registry, chain profile, window) before anything is written; a refused
+  request issues nothing, not even the intents-transfer entry. One issuance rate-limit token per call. An origin whose
+  chain has no rails profile is `asset_unsupported`; `maxTimeoutSeconds` default = `clamp(default_deadline_s, 60,
+  86 400)`. Minimum amount for near-intents entries: 1 base unit (the route quote enforces the economic minimum).
+  Without operation-token keys issuance is `503 rail_unavailable`.
+- **Quotes.** Quotas are the quote rates only (`NP_X402_QUOTE_RATE_PER_S` = JSON `{"account":5,"refund_to":1}`; the
+  `refundTo` key uses the kit-normalised address). Binding release after rails refuses: `route_unavailable`,
+  `pricing_unavailable` (as §3.1) **and** `rail_unavailable` / `screening_unavailable` (an error envelope proves rails
+  created nothing: it replays an existing execution before any check); a timeout, transport error or any other answer
+  keeps the binding consumed (an execution may exist; fail closed — the agent fetches new requirements).
+  `screening_blocked` → `payer_blocked` (binding kept). The returned execution must be exactly the requested quote
+  (`owner = agentpay`, `x402_binding`, account, mode, `payment`/`route_quote`, `awaiting_deposit`, deposit present on
+  the origin chain, origin asset, `refund_to`, merchant asset/recipient/`amount_base`) — otherwise `503
+  rail_unavailable`, error alert, binding kept, nothing returned. A failed operation insert (instrument already known)
+  is the same.
+- **Single writer of results.** Only the execution consumer records an operation's result (`settled` with the agent
+  payment, or `failed`); settle never records from a rails read. Settle reads rails only for the pending answer's
+  `extra.status` (`provider_status`, else `state`) and for `expired_unpaid` without `deposited_amount` →
+  `invalid_exact_near_intents_deposit_not_found` (not recorded: a late settlement still wins, INV-3). A terminal rails
+  state whose event is not applied yet answers `settlement_pending`. Deposit-tx membership is checked against the
+  hashes recorded with the settlement ∪ the fresh read; `0x`-hex hashes compare case-insensitively.
+- **Kill switch.** Live issuance and live quotes are refused (`503`); deposit verification and settle are **not**
+  (they move nothing and only report rails' outcome — blocking them would only withhold a paid merchant's answer).
+- **Under-delivery.** A settled execution with `settled_amount < amount` (rails should never settle it) still gets its
+  agent payment (what arrived), but the operation result is `exact_near_intents_payment_failed` and an alert is logged.
+- **Orphan quotes.** A settled event for an execution without an operation (the quote could not be recorded after
+  rails created it) still creates the agent payment; refunded/failed ones are acked.
+- **Defects.** A defective event (no binding/evidence/sender/amount/deposit, unknown binding, mismatching execution)
+  naks (redelivered, then dead-lettered) — unless a later event of the same execution already recorded a result at an
+  equal or higher version, then it is acked. Conflicting terminal events never change a recorded result (alert).
+- **Keys.** `NP_X402_OPERATION_KEY_FILES` files hold ≥ 32 raw bytes or ≥ 64 hex digits; the newest file by
+  modification time (ties: greatest kid) signs; every matching file verifies. A malformed kid or short key fails boot.
+- **Operation status.** `quoted → settled | failed` only (the spec's `NearIntentsOperationStatus` also lists
+  `settling`, unused: settle never claims a non-final state).
+- **Kit 0.3.0.** Until `@nearpay-internal/intents` 0.3.0 is published the four helpers live in one adapter file
+  (`src/domain/near-intents/kit.ts`, a copy of kit `stage-3/3.1-kit`), tested against the spec vectors; switching is a
+  re-export.
+
 ## 5. API
 
 | Method & path | Auth | Request → Response | Errors (`invalidReason` / `errorReason`) |
@@ -266,6 +318,13 @@ NEAR RPC pool (simulate 3 s, send_tx 10 s, tx_status 3 s; tried in order), compl
 
 ## 14. Tests
 
+Stage 3 (step 3.2): spec vectors for binding and operation token (kit adapter); property tests — an agent payment only
+for a settled agentpay execution with evidence and sender (never for refunded/failed), exact settled amount and fee 0,
+one terminal operation result under any event sequence, slippage clamping, token mint/verify/expiry, settle verdicts;
+Testcontainers — issuance, every quote reason, single use under concurrency, rails refusals and binding release,
+quote integrity, kill switch, quotas, token checks, pending/waiting/success/replayed/deposit_not_found, refunds,
+consumer (other owners, duplicates, stale events, defects, orphan quotes).
+
 Stage 2: property tests — every single-field mutation of an issued refund payload, validly re-signed, is `signed_intent_mismatch`; any interleaving of replays / concurrent / non-issued submissions gives one agent payment and one relay per leg (Testcontainers). Signature vectors (NEP-413 named + implicit, ERC-191, raw ed25519); every invalidReason; batch split on one bad payload; idempotent settle; settlement_pending path; sandbox E2E with `@nearpay/x402` middleware + agent client.
 
 ## 15. Stage mapping
@@ -274,7 +333,7 @@ Stage 2: property tests — every single-field mutation of an issued refund payl
 |---|---|
 | 1 | x402 `intents-transfer` (supported/requirements/verify/settle), batcher, relayer pool, checkout `agent_pay`, `/internal/relay` for checkout `intents_transfer` |
 | 2 | relay for Intents-account refunds; agent payments in dashboard; payer session via payments `getPayerCheckoutSession` (CR-15-15); relayer sends with kit `sendSignedTx` (CR-15-16) instead of its own JSON-RPC call — implemented in step 2.2 (the dashboard uses the Stage 1 `GET /v1/agent_payments` routes with `kind=refund`; CR-22-AP-02 asks for `refund` on `AgentPayment`) |
-| 3 | `near-intents` cross-chain method (§3.1, contracts in spec 0.3.0); MPP adapter evaluation |
+| 3 | `near-intents` cross-chain method (§3.1, contracts in spec 0.3.0) — implemented in step 3.2 (§4.2); MPP adapter evaluation (not started) |
 
 ## 16. Ops CLI (Stage 1)
 
