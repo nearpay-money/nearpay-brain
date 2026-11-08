@@ -1,6 +1,6 @@
 # LLD — `nearpay-notify`
 
-> Spec 0.2.1 update (spec 0.2.1: recovery and secret-rotation mails, recipients by user, `created_by` on destinations — §"Spec 0.2.1 contract changes") · Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
+> Version 1.5 (spec 0.2.1 implementation: manager changes to owners and admins, recovery and rotation audiences, names via ?user= — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: recovery and secret-rotation mails, recipients by user, `created_by` on destinations — §"Spec 0.2.1 contract changes") · Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -94,3 +94,11 @@ Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link
 - `webhooks.secret_rotated` on **`evt.webhooks.endpoint.secret_rotated`**: developers + owners, URL and `previous_secret_expires_at` (never the secret).
 - `notification-recipients` accepts `user` (one member, any role) — e.g. to mail the affected member of a `member.*` event.
 - `InternalSettlementDestination.created_by` is available for destination mails (e.g. excluding the creator).
+
+**Implementation (spec 0.2.1, v1.5).**
+
+- `security.member_changed`: when the member's `role` or `previous_role` is owner or admin, owners **and admins** are mailed (identity audit fix d: the other managers see every manager change); other roles reach owners only. `member_email` and `actor_email` come from the recipient list, else from `notification-recipients?user=` (any role, and members removed in the last 7 days), else the id is shown.
+- `security.recovery`: audience `accounts`, the owners and admins of every account in `account_ids`, mailed once per user across the accounts (dedupe key `<event id>:<user id>`; the recovered user is one of them). The user is named through the same lookup. An empty `account_ids` sends nothing.
+- `webhooks.secret_rotated`: identity `kind=developer`, i.e. owners, admins and developers (admins are included, unlike the earlier "developers + owners" line). The mail shows the URL, the overlap end or "dropped at once", the rotating user (by email when listed) and a test-mode banner for test endpoints. It never shows a secret.
+- `security.destination_approval` also excludes `created_by` (deduplicated with `approval.approved_by`).
+- Snapshots and samples: `security.recovery` (2) and `webhooks.secret_rotated` (2).
