@@ -1,6 +1,6 @@
 # LLD — `nearpay-rails`
 
-> Version 1.9 (step 3.2b, spec 0.3.1: `getEvidenceSummary?owner=`, sandbox verifier sender from `SimTx.transfers[].from` — §20.1) · Version 1.8 (step 3.2 implementation: ownership enforced by caller identity, agentpay read rule, `Evidence.sender` per detector, migration `0004`, evidence-summary gap — §20.1) · Version 1.7 (step 3.1, spec 0.3.0: executions owned by agentpay for cross-chain x402 — `owner`, `x402_binding`, `Evidence.sender`, `listEvidence?owner` — §20) · Version 1.6 (spec 0.2.1 implementation: observed-fee and deposited-amount sources, abandon rules, `control_flags.known` and the boot read, nonce issuance, migration `0003` — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: abandon refund legs, observed fee, deposited amount, decimals, fee share of `amount_in`, refund-leg nonce, fresh screening, FX codes on refund legs — §"Spec 0.2.1 contract changes") · Version 1.5 (stage 2 audit finding 4: refund quote bounds against §8.2 pricing — payer floor within the route slippage, price band, merchant cost cap; every route leg is priced, pricing unavailable refuses — §8.1 step 10, §6.1) · Version 1.4 (step 2.2 implementation findings: refund-leg mapping and verification floor §6.1, migration `0002`, test-mode FX from config, asset-priced par, completeness and archive details §8.10–§8.11, Explorer test cursor, contract gaps; changes in §19) · Version 1.3 (step 2.1 contracts, spec 0.2.0 — console executions routes, reverify and `ExecutionRefund.token` = `TokenContract` settled at integration §6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
+> Version 1.10 (step 4.1, spec 0.4.0: Solana and Bitcoin as Tier A chains — profiles, assets, Solana watcher, Bitcoin confirmation tracking, verifiers, `Evidence.solana`/`Evidence.bitcoin`, test mode — §21) · Version 1.9 (step 3.2b, spec 0.3.1: `getEvidenceSummary?owner=`, sandbox verifier sender from `SimTx.transfers[].from` — §20.1) · Version 1.8 (step 3.2 implementation: ownership enforced by caller identity, agentpay read rule, `Evidence.sender` per detector, migration `0004`, evidence-summary gap — §20.1) · Version 1.7 (step 3.1, spec 0.3.0: executions owned by agentpay for cross-chain x402 — `owner`, `x402_binding`, `Evidence.sender`, `listEvidence?owner` — §20) · Version 1.6 (spec 0.2.1 implementation: observed-fee and deposited-amount sources, abandon rules, `control_flags.known` and the boot read, nonce issuance, migration `0003` — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: abandon refund legs, observed fee, deposited amount, decimals, fee share of `amount_in`, refund-leg nonce, fresh screening, FX codes on refund legs — §"Spec 0.2.1 contract changes") · Version 1.5 (stage 2 audit finding 4: refund quote bounds against §8.2 pricing — payer floor within the route slippage, price band, merchant cost cap; every route leg is priced, pricing unavailable refuses — §8.1 step 10, §6.1) · Version 1.4 (step 2.2 implementation findings: refund-leg mapping and verification floor §6.1, migration `0002`, test-mode FX from config, asset-priced par, completeness and archive details §8.10–§8.11, Explorer test cursor, contract gaps; changes in §19) · Version 1.3 (step 2.1 contracts, spec 0.2.0 — console executions routes, reverify and `ExecutionRefund.token` = `TokenContract` settled at integration §6: pricing/FX with ECB + CoinGecko and staleness bounds §8.2, Explorer feed with the owner token §8.5, reconciliation evidence §8.10, observation archive §8.11, live 1Click shape §3; changes in §18) · Version 1.2 (step 1.2 implementation findings folded: data and chain profiles §4, state rules §5, appFees split and SP-01 §8.1, tags §8.3, tracking §8.4–§8.8, minimums and options §8.9, configuration §11, ops CLI §17; SP-01 and SP-14 resolved) · Version 1.1 audited (`audits/rails.md`) · HLD §10 · ADR-0003, ADR-0006, ADR-0012 · Foundations `00-foundations.md` · Provider facts `reference/landscape.md` §2
 
 ## 1. Scope
 
@@ -161,8 +161,9 @@ Stage 1 values (`config/chains.yaml`; L2 `finalized` follows L1 finality, ≈ 15
 | `near:mainnet` | A | 120 | 1800 | 600 | — (NEAR indexer) |
 | `eip155:1` Ethereum | A | 600 | 1800 | 2700 | every 12 s |
 | `eip155:8453` Base, `eip155:42161` Arbitrum | A | 300 | 1800 | 3600 | every 2 s |
-| Optimism, Polygon, BSC, Avalanche, Gnosis, Solana | B | 300 | 1800 | 1800 | — |
-| Bitcoin (1 conf < USD 1k, else 2) | B | 3600 | 7200 | 7200 | — |
+| Optimism, Polygon, BSC, Avalanche, Gnosis | B | 300 | 1800 | 1800 | — |
+| `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` Solana (Stage 4: Tier A, §21) | A | 300 | 1800 | 1800 | every 4 s (§21.2) |
+| `bip122:000000000019d6689c085ae165831e93` Bitcoin (1 conf < USD 1k, else 2; Stage 4: Tier A, §21) | A | 3600 | 7200 | 7200 | every 60 s, signal only (§21.2) |
 | Litecoin, Dogecoin (6 confirmations) | B | 1800 | 3600 | 5400 | — |
 
 ## 5. Execution state machine
@@ -358,7 +359,7 @@ Native-asset destinations (ETH, etc.) are not log-visible → verified via provi
 On provider `SUCCESS` without watcher/indexer evidence: for each `destinationChainTxHashes` → chain adapter:
 - EVM: `eth_getTransactionReceipt` (status 1, block ≤ finalized) → ERC-20 `Transfer(to=recipient, value)` on token contract, or native `value` via `eth_getTransactionByHash` + trace-free check (`to == recipient`) — if not provable (internal transfer) → Tier B rules apply for that asset.
 - NEAR: `EXPERIMENTAL_tx_status(final)` → NEP-141 `ft_transfer` event to recipient, or `intents.near` transfer to the Intents account. All-shard RPC nodes (FastNEAR) accept any `sender_account_id`, so the verifier needs only the tx hash; `wait_until: NONE` answers at once (`UNKNOWN_TRANSACTION` for an unknown hash).
-- Solana / Bitcoin (Stage 4): finalized tx token-balance delta / output to address with required confirmations.
+- Solana / Bitcoin (Stage 4, §21.3): finalized tx token-balance delta / outputs to the address with the required confirmations (`confirmation_tiers`).
 Compare `amount ≥ amount_out_expected` → `pass`; `0 < amount < expected` → `short`; otherwise `mismatch`. Not yet final → retry every 10 s (`verify_at`) until `verification_timeout_s` → `held`; only final outcomes are written to `verifications`.
 
 ### 8.9 Destination minimums
@@ -462,7 +463,7 @@ Daily job `observations.archive` (feeds, 03:00 UTC, after reconciliation): obser
 | 1 | token registry + pricing (par + primary/secondary), `oneclick` + `sandbox` + `direct_intents` providers, executions, hot poller, Explorer feed, NEAR indexer (Intents + NEP-141), EVM watchers for Base/Arbitrum/Ethereum, verifiers NEAR + EVM, minimums, options, evidence API |
 | 2 | refunds (`EXACT_INPUT`/`EXACT_OUTPUT` legs; route shapes owned by payments), secondary prices + ECB FX (non-par settlement, multi-currency pricing, §8.2), Explorer feed with the owner token (§8.5), reconciliation evidence (§8.10), observation archive (§8.11), console reads (§6) |
 | 3 | executions owned by agentpay (cross-chain x402: `owner`, `x402_binding`, ownership by caller identity), `Evidence.sender`, `listEvidence?owner` (§20). No invoice/billing work in rails: invoices collect through payments' checkout sessions; `evt.rails.vault.event` stays Stage 4 |
-| 4 | Solana + Bitcoin watchers/verifiers, vault event forwarding hardening |
+| 4 | Solana + Bitcoin watchers/verifiers (§21), vault event forwarding hardening |
 
 ## 17. Ops CLI (Stage 1)
 
@@ -561,4 +562,77 @@ Cross-chain x402 (`exact` + `near-intents`, agentpay §3.1) quotes through rails
 - **`Evidence.sender`** (stored in the `evidence` jsonb, no migration): NEAR indexer and sandbox feed — DIP-4 `transfer.account_id` for binding credits, NEP-245 `mt_transfer.old_owner_id` and NEP-141 `ft_transfer.old_owner_id` for amount credits; EVM watcher — the ERC-20 `Transfer` `from`; verifier — EVM ERC-20 `from` / native `tx.from`, NEAR `old_owner_id`, each the sender of the **largest counted transfer** to the recipient (first on a tie; the amount rule is unchanged). Tier B (provider-attested) evidence: `null` (no chain view). Sandbox verifier: `SimTx.transfers[].from` (spec 0.3.1; sandbox §4.1 — the simulated liquidity provider for payouts), `null` when absent. A sender the event does not name is `null`, never guessed. On mainnet a 1Click delivery's sender is the delivering solver/1Click account, not the agent's origin wallet — agentpay's `payer` is therefore "the Intents account that delivered" (as §20 says).
 - **Migration `0004_stage3_owner.sql`** (additive): `x402_binding text`, check `(owner = 'agentpay') = (x402_binding is not null)`, unique partial index on `x402_binding`, index `(account_id, livemode, owner, terminal_at)` for `listEvidence?owner`. `owner` exists since `0001` (not null, default `payments`): the backfill is a no-op.
 - **Gap — evidence summary has no owner — resolved in spec 0.3.1 (v1.9).** `getEvidenceSummary?owner=` implemented as above; payments sends `owner=payments` and dropped its unfiltered relisting (payments §21.8).
+
+## 21. Stage 4 — Solana and Bitcoin as Tier A chains (step 4.1, spec 0.4.0)
+
+Contracts: `nearpay-spec` `src/common/chains.ts`, `Evidence.solana` / `Evidence.bitcoin`, `ChainProfile.explorer_address_url` / `confirmation_tiers`, sandbox `SimTx` fields; vectors `test-vectors/chains-solana-bitcoin.json` (profiles, assets, address rules, omft ids, evidence parsing — rails and sentinel test their adapters against the same file).
+
+### 21.1 Chain profiles and assets
+
+| | Solana | Bitcoin |
+|---|---|---|
+| `chain` (CAIP-2) | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` | `bip122:000000000019d6689c085ae165831e93` |
+| `blockchain` (1Click) / `family` | `sol` / `solana` | `btc` / `bitcoin` |
+| `tier` | A | A |
+| `min_deadline_s` / `default_deadline_s` / `verification_timeout_s` | 300 / 1800 / 1800 | 3600 / 7200 / 7200 |
+| finality | `finalized` commitment (≈ 32 slots, ~13 s) | `confirmation_tiers` = `BITCOIN_CONFIRMATION_TIERS`: 1 confirmation below USD 1,000, else 2 (USD value from the execution's `price_snapshot`) |
+| `memo_mode` | `none` | `none` |
+| explorer | `https://solscan.io/tx/{tx}`, `https://solscan.io/account/{address}` | `https://mempool.space/tx/{tx}`, `https://mempool.space/address/{address}` |
+| destination types | `chain_address` only | `chain_address` only (P2WPKH / P2TR, identity §8.2) |
+| `Evidence.finality` | `finalized` | `confirmed` |
+
+Settlement assets enabled with the profiles (asset ids from the live `/v0/tokens`, recorded 2026-11-06; all `nep141` omft ids — none of these assets has a `nep245` form):
+
+| Asset id | Symbol | Decimals | Token (`TokenContract`) |
+|---|---|---|---|
+| `nep141:sol.omft.near` | SOL | 9 | `native` |
+| `nep141:sol-5ce3bf3a31af18be40ba30f721101b4341690186.omft.near` | USDC | 6 | `spl` `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` (Token program) |
+| `nep141:sol-c800a4bd850783ccb82c2b2c7e84175443606352.omft.near` | USDT | 6 | `spl` `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` (Token program) |
+| `nep141:btc.omft.near` | BTC | 8 | `native` |
+
+- **SPL asset-id rule (verified against all 12 `sol-` omft entries of the live registry):** `nep141:sol-<hex(keccak256(mint bytes)[12..32])>.omft.near`. The token registry rejects a `sol-` entry whose `contractAddress` does not reproduce its id (registry entry dropped + alert), so `TokenContract.address` for SPL is bound to the asset id like EVM contracts are (`parseOmftAssetId`, kit `chains` `splAssetId`).
+- **`1cs_v1:` ids.** The live registry now also lists `1cs_v1:<chain>:<kind>:<id>` asset ids (27 on 2026-11-06, e.g. `1cs_v1:btc:native:coin`, `1cs_v1:sol:spl:<mint>`). They are not NEAR Intents asset ids (`AssetId` rejects them); the registry ignores them (counted, not stored) until a spec version adopts them.
+- **Amount tags (§8.3).** USDC/USDT (6 decimals) and SOL (9 decimals at ≈ USD 150) are tagged as usual. BTC is **never tagged**: 1 sat ≈ USD 0.0008 gives `T = floor(0.01 / unit_usd) < 100`, so §8.3 sets tag 0; Bitcoin evidence therefore comes from the verifier on the provider's destination txid (§21.3), never from amount matching.
+- Minimums (§8.9) apply unchanged; Bitcoin dust makes the `20 × withdrawFee` floor dominate.
+
+### 21.2 Watchers (`rails-feeds`, demand-driven like §8.6/§8.7)
+
+```
+solana (every 4 s, only while live executions with a Solana destination are in flight):
+  for each watched destination owner with tagged in-flight executions:
+    accounts = mint ≠ null ? [ATA(owner, mint)] : [owner]           // ATA = findProgramAddress([owner, Token, mint], ATA program)
+    sigs = getSignaturesForAddress(account, {until: cursor[account], commitment: 'finalized', limit: 100})
+    for each sig (oldest first): tx = getTransaction(sig, {commitment:'finalized', maxSupportedTransactionVersion:0, encoding:'jsonParsed'})
+      skip if tx.meta.err ≠ null
+      delta = Σ postTokenBalances − Σ preTokenBalances where owner = destination and mint = asset mint  (missing pre entry = 0)
+              (SOL: postBalances[i] − preBalances[i] at the destination's index in static keys + loadedAddresses)
+      exec = tagged in-flight execution with destination_key = chain|owner|asset and amount_out_expected == delta
+        → exact single match → evidence(pass, source 'watcher', Evidence.solana filled) → succeeded
+        → none → 'unattributed_transfer'
+    cursor[account] = newest processed sig (per address; forgotten when nothing is in flight, like §8.6)
+bitcoin (every 60 s, signal only): for each destination with in-flight executions: Esplora GET /address/{addr}/txs
+    a new tx paying the address → has_signal = true, next_poll_at = now() (the provider status then carries the
+    destination txid for the verifier). Never evidence by itself: BTC is untagged (§21.1).
+```
+Tracker cursors `solana` and `bitcoin` join the §8.10 completeness rule (each is "past the day" when its last cycle finished after `day+1` with no error).
+
+### 21.3 Verifiers (§8.8 adapters) and evidence shapes
+
+- **Solana:** for each `destinationChainTxHashes` signature: `getTransaction` as above; not found or not yet `finalized` → retry every 10 s until `verification_timeout_s`; `meta.err ≠ null` → that signature proves nothing (another hash or timeout → `held(evidence_timeout)`). Amount = the owner's balance delta for the asset (token-balance delta for SPL, lamports for SOL), so a payout that also creates the ATA counts in full. `Evidence`: `tx_hash` = signature, `block_ref` = slot, `recipient` = owner, `finality: finalized`, `solana {signature, slot, block_time, mint, token_program, owner, token_accounts, pre_amount, post_amount}`. Only the classic Token program is enabled in v1 (a Token-2022 mint is not in the asset table).
+- **Bitcoin:** Esplora `GET /tx/{txid}` + `GET /blocks/tip/height`: amount = Σ outputs whose scriptPubKey encodes the destination (compare re-derived lower-case address); `confirmations = tip − block_height + 1`; below `requiredConfirmations(confirmation_tiers, usd_value)` → not final, retry every 10 s until `verification_timeout_s`. `Evidence`: `tx_hash` = txid, `block_ref` = height, `finality: confirmed`, `bitcoin {txid, outputs[{vout, value, script_pubkey}], block_height, block_hash, confirmations, required_confirmations}`.
+- Comparison as §8.8 (`pass` / `short` / `mismatch`). Agreement: at or above `NP_AGREEMENT_USD` two pool members must return the same amount and block (Solana slot / Bitcoin block hash), as for EVM.
+- **Sender:** `Evidence.sender` = the solver's address when visible (Solana: the token-balance owner whose balance fell; Bitcoin: null — inputs are not attributed).
+
+### 21.4 Integrations and configuration
+
+| Target | Timeout | Notes |
+|---|---|---|
+| Solana RPC pool `NP_SOLANA_RPC_URLS` (≥ 2; default `https://api.mainnet-beta.solana.com` + an owner-provided provider URL) | 3 s | hedged reads; `getSignaturesForAddress`, `getTransaction`; 429 → back off ×2 |
+| Bitcoin Esplora pool `NP_BITCOIN_ESPLORA_URLS` (default `https://mempool.space/api,https://blockstream.info/api`; keyless) | 5 s | `/tx/{txid}`, `/blocks/tip/height`, `/address/{addr}/txs` |
+
+Both chains stay **Tier B** (§4 limits, provider-attested) when their pool is unset or unhealthy for > 5 min: the profile's `tier` is computed at boot from configuration and an alert `tier_a_degraded{chain}` fires; executions already created keep the tier they were created with.
+
+### 21.5 Test mode
+
+Test executions on these chains settle through the sandbox exactly like EVM: the sandbox verifier adapter reads `GET /sim/chains/{caip2}/tx/{hash}` and fills `Evidence.solana` / `Evidence.bitcoin` from `SimTx` (`block_ref` → slot/height, `transfers[].token_account`, `transfers[].vout`, `confirmations`; `pre_amount`/`post_amount` null; `block_hash` = sha256 hex of `<chain>|<block_ref>`), applying the same confirmation tiers and the `failed` flag (sandbox §10). Watchers do not run in test mode.
 
