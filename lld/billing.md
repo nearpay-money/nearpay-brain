@@ -1,6 +1,6 @@
 # LLD — `nearpay-billing`
 
-> Version 1.4 (step 4.1, AI vault audits: mandate columns bigint + linkage columns §3, linkage rules §6, keeper rules §7.1, keeper gas 250 Tgas) · Version 1.3 (step 4.1: keeper attaches 150 Tgas to vault `collect`, §7 — `contracts-vault.md` v1.3 §3.3) · Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
+> Version 1.5 (vault re-audit: `prepare` signer and gas notes §5) · Version 1.4 (step 4.1, AI vault audits: mandate columns bigint + linkage columns §3, linkage rules §6, keeper rules §7.1, keeper gas 250 Tgas) · Version 1.3 (step 4.1: keeper attaches 150 Tgas to vault `collect`, §7 — `contracts-vault.md` v1.3 §3.3) · Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -107,7 +107,7 @@ Exact contracts: `nearpay-spec` `public/billing-catalog.ts`, `public/invoices.ts
 | `GET /v1/invoices/{id}/public` · `POST …/public/sessions` · `GET …/public/pdf` | anonymous + `X-NearPay-Invoice-Secret` | hosted invoice `/i/:id`: read-only `PublicInvoice`; create-or-continue the invoice's payments session (`InvoicePaymentSession {checkout_session, client_secret, expires_at, reused}`); PDF |
 | `POST /v1/subscriptions` | `subscriptions.write` · owner/admin/finance | `{customer, items[{price, quantity?, tax_rates?}], collection_method?, days_until_due? (7), trial_period_days?, default_tax_rates?, dunning?{reminder_days, on_exhausted}, description?, settlement_destination?, metadata?}` (`mandate` arrives in Stage 4) |
 | `PATCH /v1/subscriptions/{id}` · `POST …/cancel` | `subscriptions.write` · owner/admin/finance | update applies from the next renewal, `proration_behavior` only `none`; cancel `{at_period_end?}` |
-| `POST /v1/mandates/prepare` | `subscriptions.write` | Stage 4: returns `{receiver_id: vault, method:'ft_transfer_call', args:{amount, msg}}` for the payer to sign |
+| `POST /v1/mandates/prepare` | `subscriptions.write` | Stage 4: returns `{receiver_id: vault, method:'ft_transfer_call', args:{amount, msg}, gas: '100 Tgas', deposit: '1 yoctoNEAR'}` for the payer to sign **from their own NEAR account** (the vault refunds deposits whose sender is not the transaction signer — `contracts-vault.md` v1.5 §3.1; smart-wallet payers unsupported in v1). Cancel/withdraw prepared for the payer attach 100 Tgas (`MIN_EXIT_GAS` 50 Tgas, §3.4) |
 | `GET /v1/mandates…` | `subscriptions.read` | Stage 4 |
 | `GET /internal/invoices/{id}/notification-context` · `GET /internal/subscriptions/{id}/notification-context` | notify (`billing.read`) | customer email/name (via payments), merchant name, amounts, hosted link (with secret), reminder number |
 

@@ -21,7 +21,7 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.4) |
 | [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.5 + spec 0.2.1 update) |
 | [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.8 + spec 0.2.1 update) |
-| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.4: step 4.1 implementation decisions, per-mandate cap, AI audits folded in) |
+| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.5: step 4.1 implementation decisions, per-mandate cap, AI audits and re-audit folded in) |
 | [sdks-and-tools.md](sdks-and-tools.md) | `nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site` | [audit](audits/sdks-and-tools.md) | dev-ready (v1.6) |
 | [platform.md](platform.md) | `nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` (entry) | [audit](audits/platform.md) | dev-ready (v1.5) |
 | — | Whole system | [audits/system.md](audits/system.md) | dev-ready (v1.1) |
