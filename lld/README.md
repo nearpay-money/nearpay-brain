@@ -11,14 +11,14 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [00-foundations.md](00-foundations.md) | Cross-cutting: `nearpay-spec`, `nearpay-kit`, conventions every service follows | [audit](audits/00-foundations.md) | dev-ready (v1.7 + step 3.1 update) |
 | [identity.md](identity.md) | `nearpay-identity` | [audit](audits/identity.md) | dev-ready (v1.10) |
 | [payments.md](payments.md) | `nearpay-payments` | [audit](audits/payments.md) | dev-ready (v1.10) |
-| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | dev-ready (v1.8: vault event forwarding rules) |
+| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | dev-ready (v1.10: vault event forwarding rules, `VaultEventRecord` — spec 0.4.0) |
 | [sentinel.md](sentinel.md) | `nearpay-sentinel` | [audit](audits/sentinel.md) | dev-ready (v1.9) |
 | [agentpay.md](agentpay.md) | `nearpay-agentpay` | [audit](audits/agentpay.md) | dev-ready (v1.8) |
 | [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | dev-ready (v1.7 + spec 0.2.1 update) |
-| [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | dev-ready (v1.8) |
-| [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.6) |
-| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.6: Stage 4 keeper, mandate linkage and funding-signer rules) |
-| [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.4) |
+| [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | dev-ready (v1.10: `mandate.*` types — spec 0.4.0) |
+| [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.8: payer mandate mails — spec 0.4.0) |
+| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.7: Stage 4 keeper, linkage rules and auto-debit contracts §14 — spec 0.4.0) |
+| [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.6: subscription-vault stand-in, OQ-T-03) |
 | [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.6) |
 | [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.8 + spec 0.2.1 update) |
 | [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.6: step 4.1 implementation decisions, per-mandate cap, AI audits, re-audit and re-check 2 folded in) |
