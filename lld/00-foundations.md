@@ -1,6 +1,6 @@
 # LLD 00 — Foundations (`nearpay-spec`, `nearpay-kit`, conventions)
 
-> Spec 0.2.1 update (releases §"Releases so far") · Version 1.7 (kit 0.2.0: ops-principal enforcement §9, `@nearpay-internal/ui` §4, ADR-0021; changes in §21) · Version 1.6 (step 2.1 integration: Stage 2 service and ops scopes §9, spec 0.2.0 §3) · Version 1.5 (step 2.1 rails-fx: kit money FX helpers, http call headers, intents `sendSignedTx`; spec exact rates; changes in §20) · Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
+> Step 3.1 update (§13: `NP_ENV` ∈ {local, server, test}, required, no default — kit 0.2.1; kit SSE limits and x402 `near-intents` helpers, agentpay §3.1, webhooks §5.1) · Spec 0.2.1 update (releases §"Releases so far") · Version 1.7 (kit 0.2.0: ops-principal enforcement §9, `@nearpay-internal/ui` §4, ADR-0021; changes in §21) · Version 1.6 (step 2.1 integration: Stage 2 service and ops scopes §9, spec 0.2.0 §3) · Version 1.5 (step 2.1 rails-fx: kit money FX helpers, http call headers, intents `sendSignedTx`; spec exact rates; changes in §20) · Version 1.4 (step 1.4: `nearpay-spec` 0.1.5 and tolerant parsing §3; changes in §19) · Version 1.3 (steps 1.2 and 1.3 implemented against `nearpay-spec` 0.1.4 and `nearpay-kit` 0.1.2; changes in §18) · Version 1.2 step 1.1 (§17) · Version 1.1 audited (`audits/00-foundations.md`) · Applies to every service and client. Component LLDs only state deviations from this file.
 
 ## 1. Scope
 
@@ -212,7 +212,7 @@ Public envelope per `architecture/api-conventions.md` §6. Internal calls use th
 ## 13. Configuration and secrets
 
 - Env vars `NP_<NAME>`; secrets only as files `/run/secrets/<name>` (Docker secrets, ADR-0015), referenced by `NP_<NAME>_FILE`.
-- Common keys: `NP_ENV` (`local`·`server`), `NP_SERVICE`, `NP_DB_URL_FILE`, `NP_NATS_URL`, `NP_VALKEY_URL`, `NP_IDENTITY_URL`, `NP_JWKS_URL`, `NP_SERVICE_CLIENT_SECRET_FILE`, `NP_OTEL_ENDPOINT`, `NP_LOG_LEVEL`, `NP_EGRESS_PROXY`.
+- Common keys: `NP_ENV` (`local`·`server`·`test`; **required, no default** — a process without it fails at boot, kit 0.2.1), `NP_SERVICE`, `NP_DB_URL_FILE`, `NP_NATS_URL`, `NP_VALKEY_URL`, `NP_IDENTITY_URL`, `NP_JWKS_URL`, `NP_SERVICE_CLIENT_SECRET_FILE`, `NP_OTEL_ENDPOINT`, `NP_LOG_LEVEL`, `NP_EGRESS_PROXY`.
 - Config is validated at boot with zod; invalid config = exit 1.
 - **Pitfall:** `secret(schema)` of `@nearpay-internal/service` marks the schema object it wraps. Wrapping a shared schema (e.g. a common URL schema) silently turns every other key using it into a secret that is accepted only from a file; always pass a fresh schema (found in sentinel's Compose config; fixed with a regression test).
 
