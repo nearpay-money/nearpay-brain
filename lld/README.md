@@ -17,11 +17,11 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | dev-ready (v1.7 + spec 0.2.1 update) |
 | [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | dev-ready (v1.8) |
 | [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.6) |
-| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.4: Stage 4 keeper and mandate linkage rules) |
+| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.6: Stage 4 keeper, mandate linkage and funding-signer rules) |
 | [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.4) |
 | [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.5 + spec 0.2.1 update) |
 | [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.8 + spec 0.2.1 update) |
-| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.5: step 4.1 implementation decisions, per-mandate cap, AI audits and re-audit folded in) |
+| [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.6: step 4.1 implementation decisions, per-mandate cap, AI audits, re-audit and re-check 2 folded in) |
 | [sdks-and-tools.md](sdks-and-tools.md) | `nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site` | [audit](audits/sdks-and-tools.md) | dev-ready (v1.6) |
 | [platform.md](platform.md) | `nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` (entry) | [audit](audits/platform.md) | dev-ready (v1.5) |
 | — | Whole system | [audits/system.md](audits/system.md) | dev-ready (v1.1) |
