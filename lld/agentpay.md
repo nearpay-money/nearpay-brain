@@ -184,7 +184,7 @@ Made while implementing §3.1/§4.1 (nearpay-agentpay `stage-3/3.2-agentpay`); e
   agent payment (what arrived), but the operation result is `exact_near_intents_payment_failed` and an alert is logged.
 - **Orphan quotes.** A settled event for an execution without an operation (the quote could not be recorded after
   rails created it) still creates the agent payment; refunded/failed ones are acked.
-- **Defects.** A defective event (no binding/evidence/sender/amount/deposit, unknown binding, mismatching execution)
+- **Defects.** A defective event (no binding/evidence/sender/amount/deposit, a sender that is not a NEAR account, unknown binding, mismatching execution)
   naks (redelivered, then dead-lettered) — unless a later event of the same execution already recorded a result at an
   equal or higher version, then it is acked. Conflicting terminal events never change a recorded result (alert).
 - **Keys.** `NP_X402_OPERATION_KEY_FILES` files hold ≥ 32 raw bytes or ≥ 64 hex digits; the newest file by
