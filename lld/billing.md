@@ -1,6 +1,6 @@
 # LLD — `nearpay-billing`
 
-> Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
+> Version 1.3 (step 4.1: keeper attaches 150 Tgas to vault `collect`, §7 — `contracts-vault.md` v1.3 §3.3) · Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -118,7 +118,7 @@ Consumed: `evt.payments.payment_intent.succeeded` (`invoice` set → invoice pai
 | Kind (dedupe key) | When | Behaviour |
 |---|---|---|
 | `subscription.renew` (`sub:<id>:<period_start>`) | `current_period_end` | create invoice for next period (draft → finalize); `send_invoice` → payments session + email; `auto_debit` → `mandate.collect`; advance period |
-| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, 60 Tgas); success waits for `vault.event collected` (evidence) → invoice paid; tx failure with `ERR_INSUFFICIENT_BALANCE` → invoice switches to `send_invoice` path + `mandate.insufficient_funds`; `ERR_NOT_DUE`/`ERR_IN_FLIGHT` → retry at `next_collect_at`; other errors → retry ×5 then case |
+| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, **150 Tgas attached**, unused gas refunded — the vault reserves static gas for the token's `ft_transfer_call` and its callbacks, `contracts-vault.md` §3.3; gas burnt per collect targets ≤ 60 Tgas); success waits for `vault.event collected` (evidence) → invoice paid; tx failure with `ERR_INSUFFICIENT_BALANCE` → invoice switches to `send_invoice` path + `mandate.insufficient_funds`; `ERR_NOT_DUE`/`ERR_IN_FLIGHT` → retry at `next_collect_at`; other errors → retry ×5 then case |
 | `invoice.remind` (`in:<id>:r<n>`) | per the invoice's `reminder_days` relative to `due_date` | publish `evt.billing.invoice.reminder` (notify mails); after the last → dunning exhausted (§11 d8) |
 | `invoice.overdue` (`in:<id>:overdue`) | `due_date` | unpaid → `invoice.overdue`; subscription invoice → subscription `past_due` |
 | `subscription.renewal_upcoming` | 3 days before period end | event + email |

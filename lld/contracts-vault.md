@@ -1,6 +1,6 @@
 # LLD — `nearpay-contracts` / subscription vault
 
-> Version 1.2 (step 4.1 implementation decisions: §3.1–§3.9, §4.1, §5 V6–V9; `intents_account` constructor parameter, `refund_in_flight`, `on_merchant_leg`, closed-mandate removal, three payer/deploy-only error strings, keeper gas) · Version 1.1 (audited, `audits/contracts-vault.md`) · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
+> Version 1.3 (per-mandate cap `mandate_cap` per token — ADR-0008 / T-10, §3.8; cap rejection log detail §3.1; V10) · Version 1.2 (step 4.1 implementation decisions: §3.1–§3.9, §4.1, §5 V6–V9; `intents_account` constructor parameter, `refund_in_flight`, `on_merchant_leg`, closed-mandate removal, three payer/deploy-only error strings, keeper gas) · Version 1.1 (audited, `audits/contracts-vault.md`) · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
 
 ## 1. Scope
 
@@ -16,7 +16,7 @@ pub struct Mandate { payer: AccountId, merchant_receiver: AccountId, receiver_ki
   fee_bps: u16, collected_periods: u32, balance: U128, status: Status /* Active | Canceled | Exhausted */,
   in_flight: bool, ext_ref: String /* ≤ 64 bytes, e.g. sub_ id */ }
 ```
-Init (once, at deploy): `allowed_tokens` (USDC, USDT on NEAR), `fee_receiver = treasury.nearpay.near`, `max_fee_bps = 500`, per-token `tvl_cap`, `intents_account = intents.near` (v1.2; a parameter so sandbox/testnet can point at a stand-in). These are constructor parameters only — no setters exist.
+Init (once, at deploy): `allowed_tokens` (USDC, USDT on NEAR), `fee_receiver = treasury.nearpay.near`, `max_fee_bps = 500`, per-token `tvl_cap` and `mandate_cap` (v1.3, §3.8), `intents_account = intents.near` (v1.2; a parameter so sandbox/testnet can point at a stand-in). These are constructor parameters only — no setters exist.
 
 **v1.2 additions to state.** `Mandate.refund_in_flight: U128` (amount of a `cancel`/`withdraw` refund awaiting its callback; 0 when none). `Vault` also holds NEP-145 `storage_accounts: LookupMap<AccountId, {total, mandates}>` and `payer_mandates: LookupMap<AccountId, IterableSet<u64>>` (index for `get_mandates_by_payer`). `tvl[token]` = Σ over the token's mandates of `balance + (in_flight ? amount_per_period : 0) + refund_in_flight` — the tokens the vault holds for mandates. A mandate that is closed (`Canceled`/`Exhausted`) with `balance = 0` and nothing in flight is **removed** from state (`get_mandate` → `null`), and its storage lock returns to the payer's NEP-145 available balance (§3.7).
 
@@ -49,7 +49,8 @@ Collect ordering uses `then` chaining: merchant leg → (on success) fee leg →
 - Exactly one of the two keys; **unknown or duplicate fields are rejected** (`ERR_BAD_MSG`). `payer` = `sender_id` and `token` = the calling token contract — neither is read from `msg`; `fee_receiver` is the constructor's (ADR-0008's `create_mandate{…, fee_receiver, ref}` is superseded by §2; `ref` is `ext_ref`). A `msg` that names `fee_receiver`, `token` or `payer` is rejected.
 - `receiver_kind`: `"intents_account"` | `"near_account"` (snake_case, also in views/events; status values `"active"`, `"canceled"`, `"exhausted"`). `amount_per_period` is a decimal string (u128), `start_at` a decimal string of **nanoseconds**, optional; an omitted, `null` or past `start_at` becomes the block timestamp (payer-favourable clamp). `period_secs` ≥ 86400, `max_periods` absent/`null` (unlimited) or ≥ 1, `fee_bps` ≤ `max_fee_bps` (else `ERR_FEE_TOO_HIGH`).
 - `ext_ref` ≤ 64 bytes of printable ASCII (0x20–0x7E), may be empty. `merchant_receiver` ≠ the vault itself. The merchant share of one period must be > 0 (e.g. `amount_per_period = 1` with any fee is rejected). `msg` longer than 2048 bytes is rejected unparsed.
-- Order of checks (first failure is the logged code): token allowed (panic `ERR_TOKEN_NOT_ALLOWED`; the token refunds) → `amount = 0` / parse / shape (`ERR_BAD_MSG`) → `ERR_FEE_TOO_HIGH` → zero share (`ERR_BAD_MSG`) → create: `ERR_NO_STORAGE` → `ERR_CAP_EXCEEDED`; top_up: `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` (sender ≠ payer) → `ERR_TOKEN_NOT_ALLOWED` (other token than the mandate's) → `ERR_NOT_ACTIVE` → `ERR_CAP_EXCEEDED`. A rejection logs exactly the code (one plain log line, no event) and returns the full amount; nothing else changes.
+- Order of checks (first failure is the logged code): token allowed (panic `ERR_TOKEN_NOT_ALLOWED`; the token refunds) → `amount = 0` / parse / shape (`ERR_BAD_MSG`) → `ERR_FEE_TOO_HIGH` → zero share (`ERR_BAD_MSG`) → create: `ERR_NO_STORAGE` → per-mandate cap (`amount_per_period` and the funding, v1.3) → TVL cap; top_up: `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` (sender ≠ payer) → `ERR_TOKEN_NOT_ALLOWED` (other token than the mandate's) → `ERR_NOT_ACTIVE` → per-mandate cap → TVL cap. A rejection logs one plain line (no event) and returns the full amount; nothing else changes.
+- **Rejection log line (v1.3):** the stable code, optionally followed by `": <detail>"`. Consumers match the text before the first `:`. Only `ERR_CAP_EXCEEDED` carries a detail: `ERR_CAP_EXCEEDED: mandate` (per-mandate cap) or `ERR_CAP_EXCEEDED: tvl` (per-token TVL cap). Every other rejection logs the bare code.
 
 ### 3.2 `collect` (v1.2)
 
@@ -63,7 +64,7 @@ Collect ordering uses `then` chaining: merchant leg → (on success) fee leg →
 
 ### 3.3 Gas (v1.2)
 
-Static gas: merchant `ft_transfer_call` 35 Tgas (deployed NEP-141 implementations require `prepaid > 30 Tgas`) or `ft_transfer` 8 Tgas; `on_merchant_leg` 35 Tgas; fee `ft_transfer` 8 Tgas; `on_collected` 10 Tgas; refunds 8 + `on_refunded` 10 Tgas. Unused gas is spread by weight (merchant leg first). **The keeper must attach 150 Tgas to `collect`** (unused gas is refunded); the minimum that schedules the chain is estimated at 80–90 Tgas (the CI gas profile prints the measured value), and less fails the whole call before any state change. The §7 target "`collect` ≤ 60 Tgas" applies to gas **burnt** (measured per receipt by the integration gas profile). `lld/billing.md` §7 ("60 Tgas") must be raised to 150 Tgas.
+Static gas: merchant `ft_transfer_call` 35 Tgas (deployed NEP-141 implementations require `prepaid > 30 Tgas`) or `ft_transfer` 8 Tgas; `on_merchant_leg` 35 Tgas; fee `ft_transfer` 8 Tgas; `on_collected` 10 Tgas; refunds 8 + `on_refunded` 10 Tgas. Unused gas is spread by weight (merchant leg first). **The keeper must attach 150 Tgas to `collect`** (unused gas is refunded); the minimum that schedules the chain is estimated at 80–90 Tgas (the CI gas profile prints the measured value), and less fails the whole call before any state change. The §7 target "`collect` ≤ 60 Tgas" applies to gas **burnt** (measured per receipt by the integration gas profile). `lld/billing.md` §7 says so since billing v1.3.
 
 ### 3.4 `cancel` / `withdraw` (v1.2)
 
@@ -73,19 +74,23 @@ Static gas: merchant `ft_transfer_call` 35 Tgas (deployed NEP-141 implementation
 
 ### 3.5 Constructor (v1.2)
 
-`new(allowed_tokens, fee_receiver, max_fee_bps, tvl_caps: [{token, cap}], intents_account)` is `#[init] #[private]` (called by the vault account in the deploy batch, before its keys are deleted). Rejected with `ERR_BAD_CONFIG`: no tokens, duplicate tokens, not exactly one cap per allowed token, a cap for an unknown token, `max_fee_bps > 10000`, `fee_receiver`/`intents_account`/a token equal to the vault.
+`new(allowed_tokens, fee_receiver, max_fee_bps, tvl_caps: [{token, cap, mandate_cap}], intents_account)` is `#[init] #[private]` (called by the vault account in the deploy batch, before its keys are deleted). Rejected with `ERR_BAD_CONFIG`: no tokens, duplicate tokens, not exactly one cap entry per allowed token, a cap for an unknown token, `mandate_cap > cap` (v1.3), `max_fee_bps > 10000`, `fee_receiver`/`intents_account`/a token equal to the vault.
 
 ### 3.6 Views (v1.2)
 
-`get_mandate(mandate_id) → MandateView | null` (`{mandate_id, payer, merchant_receiver, receiver_kind, token, amount_per_period, period_secs, start_at, max_periods, fee_bps, collected_periods, balance, status, in_flight, refund_in_flight, ext_ref, next_collect_at}`), `get_mandates_by_payer(payer, from_index?, limit?)` (open mandates only, default 50, max 100, stable but unordered), `next_collect_at(mandate_id) → ns string | null` (null unless `Active` below `max_periods`), plus `get_config()` and `get_token_tvl(token) → {token, tvl, cap}`.
+`get_mandate(mandate_id) → MandateView | null` (`{mandate_id, payer, merchant_receiver, receiver_kind, token, amount_per_period, period_secs, start_at, max_periods, fee_bps, collected_periods, balance, status, in_flight, refund_in_flight, ext_ref, next_collect_at}`), `get_mandates_by_payer(payer, from_index?, limit?)` (open mandates only, default 50, max 100, stable but unordered), `next_collect_at(mandate_id) → ns string | null` (null unless `Active` below `max_periods`), plus `get_config()` (constructor parameters, incl. `caps: [{token, cap, mandate_cap}]` in `allowed_tokens` order) and `get_token_tvl(token) → {token, tvl, cap, mandate_cap}`.
 
 ### 3.7 Storage (v1.2)
 
 Registration minimum (`storage_balance_bounds.min`) 0.002 NEAR; each open mandate locks 0.01 NEAR; `available = total − 0.002 − 0.01 × open mandates`. Both cover worst-case bytes (64-char account ids, 64-byte `ext_ref`; asserted by a unit test). Storage is released when the mandate is removed — on the successful refund of `cancel`/`withdraw`, or on the collect that exhausts a mandate to zero — into the payer's available balance (`storage_withdraw`, 1 yoctoNEAR). `storage_unregister` (1 yoctoNEAR) returns everything once the account has no open mandates (`ERR_OPEN_MANDATES` otherwise; `force` is not supported). `storage_withdraw` errors: `ERR_NO_STORAGE` (not registered), `ERR_INSUFFICIENT_BALANCE` (more than available).
 
-### 3.8 Not implemented: per-mandate cap
+### 3.8 Per-mandate cap (v1.3)
 
-ADR-0008, HLD §12 and T-10 mention a per-mandate cap in addition to the per-token TVL cap; §2 defines only `tvl_cap`. v1.2 implements §2 as written (the TVL cap bounds every mandate too). If a per-mandate cap is wanted, it is a new constructor parameter and must be decided before deployment (the contract is immutable).
+ADR-0008 and T-10 require a per-mandate cap in v1 besides the per-token TVL cap. Each allowed token has a constructor-only `mandate_cap` (`≤ cap`; no setter), stored in `Vault.mandate_cap: LookupMap<AccountId, U128>`:
+- `create_mandate` is refunded with `ERR_CAP_EXCEEDED: mandate` if `amount_per_period > mandate_cap` or the funding `amount > mandate_cap`.
+- `top_up` is refunded with `ERR_CAP_EXCEEDED: mandate` if the mandate's held amount after the deposit — `balance + (in_flight ? amount_per_period : 0) + amount` — exceeds `mandate_cap`. The in-flight period counts because a failed merchant leg credits it back.
+- Collect credit-backs only return tokens the mandate already held, so a mandate never holds more than its cap (V10). The cap applies to deposits only: a mandate created under a cap stays valid; there is no way to change caps after deploy.
+- The deploy values are an owner decision for the deploy runbook (§6), as with `tvl_cap`.
 
 ### 3.9 Spec
 
@@ -107,7 +112,7 @@ EVENT_JSON:{"standard":"nearpay_vault","version":"1.0.0","event":"collected","da
 
 V1 Σ balances + Σ in-flight ≤ token balance of the vault. V2 a payer can always reach `Canceled` and recover `balance`. V3 per mandate, Σ collected ≤ `collected_periods × amount_per_period` and periods ≤ elapsed periods. V4 no method transfers to any account other than payer, merchant_receiver (via intents or directly) and fee_receiver. V5 no method changes `merchant_receiver`, amount, period or fee after creation.
 
-v1.2 precision and additions: V1 holds with "in-flight" = in-flight collects (`amount_per_period`) + in-flight refunds, and `tvl[token]` equals that sum exactly; between the receipts of one collect, tokens that already left are subtracted from the in-flight term. V3's Σ collected counts the in-flight period once its tokens have left. V5 also covers payer, token, receiver kind, `start_at`, `max_periods` and `ext_ref`. V6 `in_flight` ⇔ exactly one collect awaiting callbacks; `refund_in_flight` = the pending refund. V7 `tvl ≤ tvl_cap` per token. V8 each payer's storage lock count = its open mandates = its index entries. V9 `collect` succeeds iff its §3.2 preconditions hold, else fails with the documented code. Where each is tested: `nearpay-contracts/audits/README.md`.
+v1.2 precision and additions: V1 holds with "in-flight" = in-flight collects (`amount_per_period`) + in-flight refunds, and `tvl[token]` equals that sum exactly; between the receipts of one collect, tokens that already left are subtracted from the in-flight term. V3's Σ collected counts the in-flight period once its tokens have left. V5 also covers payer, token, receiver kind, `start_at`, `max_periods` and `ext_ref`. V6 `in_flight` ⇔ exactly one collect awaiting callbacks; `refund_in_flight` = the pending refund. V7 `tvl ≤ tvl_cap` per token. V8 each payer's storage lock count = its open mandates = its index entries. V9 `collect` succeeds iff its §3.2 preconditions hold, else fails with the documented code. V10 (v1.3) per mandate, `balance + in-flight collect + in-flight refund ≤ mandate_cap[token]` and `amount_per_period ≤ mandate_cap[token]`. Where each is tested: `nearpay-contracts/audits/README.md`.
 
 ## 6. Deployment
 
