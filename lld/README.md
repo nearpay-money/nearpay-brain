@@ -19,7 +19,7 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.6) |
 | [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.2) |
 | [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.4) |
-| [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.5 + spec 0.2.1 update) |
+| [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.6) |
 | [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.8 + spec 0.2.1 update) |
 | [contracts-vault.md](contracts-vault.md) | `nearpay-contracts` (subscription vault) | [audit](audits/contracts-vault.md) | dev-ready (v1.1) |
 | [sdks-and-tools.md](sdks-and-tools.md) | `nearpay-node`, `nearpay-agentkit`, `nearpay-cli`, `nearpay-site` | [audit](audits/sdks-and-tools.md) | dev-ready (v1.6) |
