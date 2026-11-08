@@ -1,6 +1,6 @@
 # LLD — `nearpay-billing`
 
-> Version 1.3 (step 4.1: keeper attaches 150 Tgas to vault `collect`, §7 — `contracts-vault.md` v1.3 §3.3) · Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
+> Version 1.4 (step 4.1, AI vault audits: mandate columns bigint + linkage columns §3, linkage rules §6, keeper rules §7.1, keeper gas 250 Tgas) · Version 1.3 (step 4.1: keeper attaches 150 Tgas to vault `collect`, §7 — `contracts-vault.md` v1.3 §3.3) · Version 1.2 (step 3.1, Stage 3 contracts in `nearpay-spec` 0.3.0: API §5, events §6, decisions §11) · Version 1.1 (audited, `audits/billing.md`) · HLD §12 · ADR-0008 · Flows §5–§6 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -78,8 +78,11 @@ create table subscription_items (id uuid primary key, subscription_id uuid not n
 create table mandates (
   id uuid primary key, account_id uuid not null, livemode boolean not null, subscription_id uuid references subscriptions(id),
   vault_contract text not null, onchain_id bigint, payer text not null, token text not null,
-  amount_per_period numeric(78,0) not null, period_secs integer not null, start_at timestamptz not null, max_periods integer,
-  collected_periods integer not null default 0, balance numeric(78,0) not null default 0,
+  amount_per_period numeric(78,0) not null, period_secs bigint not null, start_at timestamptz not null, max_periods bigint,
+  collected_periods bigint not null default 0, balance numeric(78,0) not null default 0,
+  merchant_receiver text, receiver_kind text, fee_bps integer, ext_ref text,   -- v1.4: from mandate_created, for linkage (§6)
+  link_status text not null default 'pending' check (link_status in ('pending','linked','unlinked')), unlinked_reason text,
+  collect_failures integer not null default 0,                                    -- consecutive collect_failed (§7.1)
   status text not null check (status in ('pending_funding','active','insufficient','exhausted','canceled')),
   last_event_height bigint, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
   version integer not null default 0, unique (vault_contract, onchain_id));
@@ -111,17 +114,34 @@ Exact contracts: `nearpay-spec` `public/billing-catalog.ts`, `public/invoices.ts
 ## 6. Events
 
 Produced: `evt.billing.invoice.{created,finalized,sent,paid,payment_failed,overdue,voided,marked_uncollectible}` (`InvoiceEvent`, `hosted_invoice_url` null), `evt.billing.invoice.reminder` (`InvoiceReminderEvent`, notify only), `evt.billing.subscription.{created,updated,deleted,renewal_upcoming}`, Stage 4: `evt.billing.mandate.{activated,collected,insufficient_funds,canceled,exhausted}`. Public webhook types: `invoice.<same>` and `customer.subscription.<same>` (not `invoice.reminder`).
-Consumed: `evt.payments.payment_intent.succeeded` (`invoice` set → invoice paid), `evt.payments.payment_intent.payment_failed` (→ `invoice.payment_failed`; invoice stays open), `evt.payments.checkout_session.expired` and `evt.payments.payment_intent.expired` (clear `checkout_session_id`; a fresh session is created lazily on the next `POST …/public/sessions`), Stage 4: `evt.rails.vault.event` (mandate created/collected/canceled/withdrawn). On `mandate_created` billing links the mandate to a subscription only if `ext_ref` = the subscription ID, `merchant_receiver` = an active Intents-account destination of that account, token/amount/period match the subscription's price — otherwise the mandate is recorded as `unlinked` and the payer is told to cancel.
+Consumed: `evt.payments.payment_intent.succeeded` (`invoice` set → invoice paid), `evt.payments.payment_intent.payment_failed` (→ `invoice.payment_failed`; invoice stays open), `evt.payments.checkout_session.expired` and `evt.payments.payment_intent.expired` (clear `checkout_session_id`; a fresh session is created lazily on the next `POST …/public/sessions`), Stage 4: `evt.rails.vault.event` (mandate created/collected/canceled/withdrawn). On `mandate_created` billing links the mandate to a subscription only if **all** hold (v1.4, AI vault audits A1-L-2 / A2-M-6): `ext_ref` = the subscription ID; `receiver_kind = "intents_account"`; `merchant_receiver` = an active Intents-account destination of that account (the one `POST /v1/mandates/prepare` put in the `msg`); `token`, `amount_per_period` and `period_secs` match the subscription's price; `fee_bps` = the account's agreed NearPay fee (ADR-0006) — a payer-edited `fee_bps` (e.g. 0) bypasses the fee; `start_at` ≤ the subscription's `current_period_end`; `max_periods` is null or ≥ the subscription's remaining periods (null when it has no end). Otherwise the mandate is recorded with `link_status = 'unlinked'` and `unlinked_reason`, and the payer is told to cancel (the contract cannot refuse payer-signed terms). Vault events reach billing only through rails' forwarding rules (`rails.md` §8.6: vault account, successful receipts); billing dedupes on `receipt_id:log_index` and never blocks the consumer on one event — an event that fails validation or storage is parked (`vault_events_parked`, alert) and the stream continues. Mandate numbers are stored as bigint/numeric (§3), so every value the vault accepts fits (`contracts-vault.md` v1.4 §3.1 bounds them anyway).
 
 ## 7. Jobs
 
 | Kind (dedupe key) | When | Behaviour |
 |---|---|---|
 | `subscription.renew` (`sub:<id>:<period_start>`) | `current_period_end` | create invoice for next period (draft → finalize); `send_invoice` → payments session + email; `auto_debit` → `mandate.collect`; advance period |
-| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, **150 Tgas attached**, unused gas refunded — the vault reserves static gas for the token's `ft_transfer_call` and its callbacks, `contracts-vault.md` §3.3; gas burnt per collect targets ≤ 60 Tgas); success waits for `vault.event collected` (evidence) → invoice paid; tx failure with `ERR_INSUFFICIENT_BALANCE` → invoice switches to `send_invoice` path + `mandate.insufficient_funds`; `ERR_NOT_DUE`/`ERR_IN_FLIGHT` → retry at `next_collect_at`; other errors → retry ×5 then case |
+| `mandate.collect` (`md:<id>:<period>`) | after renew | keeper calls vault `collect(mandate_id)` (function-call key, **250 Tgas attached**, unused gas refunded — the vault refuses less than 170 Tgas with `ERR_GAS` and reserves static gas for the token's `ft_transfer_call` and its callbacks, `contracts-vault.md` v1.4 §3.3; see §7.1 for outcomes); success waits for `vault.event collected` (evidence) → invoice paid; tx failure with `ERR_INSUFFICIENT_BALANCE` → invoice switches to `send_invoice` path + `mandate.insufficient_funds`; `ERR_NOT_DUE`/`ERR_IN_FLIGHT` → retry at `next_collect_at`; other errors → retry ×5 then case |
 | `invoice.remind` (`in:<id>:r<n>`) | per the invoice's `reminder_days` relative to `due_date` | publish `evt.billing.invoice.reminder` (notify mails); after the last → dunning exhausted (§11 d8) |
 | `invoice.overdue` (`in:<id>:overdue`) | `due_date` | unpaid → `invoice.overdue`; subscription invoice → subscription `past_due` |
 | `subscription.renewal_upcoming` | 3 days before period end | event + email |
+
+### 7.1 Keeper outcomes (Stage 4, v1.4)
+
+A `collect` transaction ends in exactly one of: a failure with a vault error string; or success with `collected` (optionally followed by `exhausted`) or `collect_failed` in its vault receipts (forwarded by rails). The job acts on the forwarded event, not on the RPC response alone (INV-2).
+
+| Outcome | Action |
+|---|---|
+| `collected`, `merchant_share` = expected share (`floor(amount × (10000 − fee_bps) / 10000)`) | invoice paid (evidence = the event); `mandate.collected`; reset `collect_failures` |
+| `collected` with a **short** `merchant_share` (partial delivery, `contracts-vault.md` §3.2) | do not mark paid: record the amount received, open a case, send the shortfall as a `send_invoice` balance invoice; the period is counted on-chain |
+| `collected` with `fee = "0"` while `fee_bps > 0` | invoice paid; alert ops (treasury not registered on the token, or blocklisted) |
+| `collect_failed` | `collect_failures += 1`; retry on the next keeper tick (≥ 1 block later, jittered, at most once per minute); after **N = 5** consecutive failures (or 24 h) the invoice falls back to `send_invoice`, `mandate.insufficient_funds` is not emitted, a case is opened for the merchant destination |
+| tx failure `ERR_INSUFFICIENT_BALANCE` | invoice → `send_invoice` path + `mandate.insufficient_funds` (unchanged) |
+| tx failure `ERR_NOT_DUE` | retry at `next_collect_at` (view) |
+| tx failure `ERR_IN_FLIGHT` | another collect is pending (possibly someone else's — `collect` is permissionless): wait for its forwarded outcome; re-check after 30 s, never in a tight loop |
+| tx failure `ERR_GAS` | keeper misconfiguration: alert, fix gas, retry |
+| tx failure `ERR_NOT_ACTIVE` / `ERR_MAX_PERIODS` / `ERR_NOT_FOUND` | reconcile the mirror from the view / events; no retry |
+| other errors | retry ×5 then case (unchanged) |
 
 ## 8. Configuration
 

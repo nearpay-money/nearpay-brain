@@ -1,6 +1,6 @@
 # LLD — `nearpay-contracts` / subscription vault
 
-> Version 1.3 (per-mandate cap `mandate_cap` per token — ADR-0008 / T-10, §3.8; cap rejection log detail §3.1; V10) · Version 1.2 (step 4.1 implementation decisions: §3.1–§3.9, §4.1, §5 V6–V9; `intents_account` constructor parameter, `refund_in_flight`, `on_merchant_leg`, closed-mandate removal, three payer/deploy-only error strings, keeper gas) · Version 1.1 (audited, `audits/contracts-vault.md`) · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
+> Version 1.4 (independent AI audits 2026-11-08 folded in — `nearpay-contracts/audits/2026-11-08-ai-audits.md`: relayed senders refused §3.1, input bounds §3.1, `MIN_COLLECT_GAS` and new static gas §3.3, constructor checks §3.5, callback failure §3.10, accepted risks §3.11, event validity §4.1, deploy runbook §6) · Version 1.3 (per-mandate cap `mandate_cap` per token — ADR-0008 / T-10, §3.8; cap rejection log detail §3.1; V10) · Version 1.2 (step 4.1 implementation decisions: §3.1–§3.9, §4.1, §5 V6–V9; `intents_account` constructor parameter, `refund_in_flight`, `on_merchant_leg`, closed-mandate removal, three payer/deploy-only error strings, keeper gas) · Version 1.1 (audited, `audits/contracts-vault.md`) · ADR-0008 · Flow §6 · Stage 4 · Rust `near-sdk` 5
 
 ## 1. Scope
 
@@ -39,7 +39,13 @@ Collect ordering uses `then` chaining: merchant leg → (on success) fee leg →
 
 **Error strings added in v1.2** (payer- or deploy-only paths; the keeper never sees them): `ERR_STILL_ACTIVE` (`withdraw` on an active mandate), `ERR_OPEN_MANDATES` (`storage_unregister` with open mandates), `ERR_BAD_CONFIG` (constructor). near-sdk's own messages remain for its guards: `Method <m> is private`, `Requires attached deposit of exactly 1 yoctoNEAR`, `Method <m> doesn't accept deposit`.
 
-### 3.1 `msg` schema (v1.2)
+**Error strings added in v1.4:** `ERR_UNSUPPORTED_SENDER` (`ft_on_transfer` from `sender_id = intents_account` or the vault itself; logged, refunded) and `ERR_GAS` (`collect` with less than `MIN_COLLECT_GAS` attached; the keeper sees this one, `billing.md` §7.1).
+
+### 3.1 `msg` schema (v1.2, v1.4)
+
+**Who may fund (v1.4, AI audits A1-M-2 / A2-M-1).** The payer is the NEP-141 `sender_id`, so only directly signed `ft_transfer_call`s fund mandates. A deposit whose `sender_id` is `intents_account` (Intents `ft_withdraw` with `msg`, 1Click `customRecipientMsg`) would make intents.near the payer — the human could never cancel and a refund (plain `ft_transfer` to intents.near) would credit nobody — so it is refunded with `ERR_UNSUPPORTED_SENDER`, checked right after the token allow-list and before parsing (create and top_up). Funding from Intents balances or other chains (SP-06) needs its own design (explicit payer and refund-to in `msg`, accepted only from `intents_account`, refunds as `ft_transfer_call(intents_account, msg = payer)`) and an ADR before it is enabled. `POST /v1/mandates/prepare` must tell payers to sign from their own NEAR account.
+
+**Bounds (v1.4, A2-M-3).** `period_secs` ≤ 366 days (31 622 400), `max_periods` ≤ 2^31 − 1, `start_at` ≤ block time + 366 days; larger values → `ERR_BAD_MSG`. Every number the vault accepts therefore fits int4/bigint columns and is exact in JavaScript. Number strings follow near-sdk's `U128`/`U64` parsing, which also accepts a leading `+` and leading zeros (`"+0010"`); events and views re-serialise canonically, so consumers only ever see canonical decimals.
 
 ```json
 {"create_mandate":{"merchant_receiver":"m.near","receiver_kind":"intents_account","amount_per_period":"10000000",
@@ -49,12 +55,12 @@ Collect ordering uses `then` chaining: merchant leg → (on success) fee leg →
 - Exactly one of the two keys; **unknown or duplicate fields are rejected** (`ERR_BAD_MSG`). `payer` = `sender_id` and `token` = the calling token contract — neither is read from `msg`; `fee_receiver` is the constructor's (ADR-0008's `create_mandate{…, fee_receiver, ref}` is superseded by §2; `ref` is `ext_ref`). A `msg` that names `fee_receiver`, `token` or `payer` is rejected.
 - `receiver_kind`: `"intents_account"` | `"near_account"` (snake_case, also in views/events; status values `"active"`, `"canceled"`, `"exhausted"`). `amount_per_period` is a decimal string (u128), `start_at` a decimal string of **nanoseconds**, optional; an omitted, `null` or past `start_at` becomes the block timestamp (payer-favourable clamp). `period_secs` ≥ 86400, `max_periods` absent/`null` (unlimited) or ≥ 1, `fee_bps` ≤ `max_fee_bps` (else `ERR_FEE_TOO_HIGH`).
 - `ext_ref` ≤ 64 bytes of printable ASCII (0x20–0x7E), may be empty. `merchant_receiver` ≠ the vault itself. The merchant share of one period must be > 0 (e.g. `amount_per_period = 1` with any fee is rejected). `msg` longer than 2048 bytes is rejected unparsed.
-- Order of checks (first failure is the logged code): token allowed (panic `ERR_TOKEN_NOT_ALLOWED`; the token refunds) → `amount = 0` / parse / shape (`ERR_BAD_MSG`) → `ERR_FEE_TOO_HIGH` → zero share (`ERR_BAD_MSG`) → create: `ERR_NO_STORAGE` → per-mandate cap (`amount_per_period` and the funding, v1.3) → TVL cap; top_up: `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` (sender ≠ payer) → `ERR_TOKEN_NOT_ALLOWED` (other token than the mandate's) → `ERR_NOT_ACTIVE` → per-mandate cap → TVL cap. A rejection logs one plain line (no event) and returns the full amount; nothing else changes.
+- Order of checks (first failure is the logged code): token allowed (panic `ERR_TOKEN_NOT_ALLOWED`; the token refunds) → sender (`ERR_UNSUPPORTED_SENDER`, v1.4) → `amount = 0` / parse / shape (`ERR_BAD_MSG`) → `ERR_FEE_TOO_HIGH` → zero share (`ERR_BAD_MSG`) → create: `ERR_NO_STORAGE` → per-mandate cap (`amount_per_period` and the funding, v1.3) → TVL cap; top_up: `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` (sender ≠ payer) → `ERR_TOKEN_NOT_ALLOWED` (other token than the mandate's) → `ERR_NOT_ACTIVE` → per-mandate cap → TVL cap. A rejection logs one plain line (no event) and returns the full amount; nothing else changes.
 - **Rejection log line (v1.3):** the stable code, optionally followed by `": <detail>"`. Consumers match the text before the first `:`. Only `ERR_CAP_EXCEEDED` carries a detail: `ERR_CAP_EXCEEDED: mandate` (per-mandate cap) or `ERR_CAP_EXCEEDED: tvl` (per-token TVL cap). Every other rejection logs the bare code.
 
 ### 3.2 `collect` (v1.2)
 
-- Check order: `ERR_NOT_FOUND` → `ERR_MAX_PERIODS` (status `Exhausted`) → `ERR_NOT_ACTIVE` (`Canceled`) → `ERR_IN_FLIGHT` → `ERR_MAX_PERIODS` (defensive) → `ERR_NOT_DUE` → `ERR_INSUFFICIENT_BALANCE`. Not-due wins over insufficient balance, so the keeper falls back to `send_invoice` only for a period that is actually due.
+- Check order: `ERR_GAS` (v1.4: less than `MIN_COLLECT_GAS` attached) → `ERR_NOT_FOUND` → `ERR_MAX_PERIODS` (status `Exhausted`) → `ERR_NOT_ACTIVE` (`Canceled`) → `ERR_IN_FLIGHT` → `ERR_MAX_PERIODS` (defensive) → `ERR_NOT_DUE` → `ERR_INSUFFICIENT_BALANCE`. Not-due wins over insufficient balance, so the keeper falls back to `send_invoice` only for a period that is actually due.
 - Periods are 1-based: period *n* is due at `start_at + (n − 1) × period_secs` (period 1 at `start_at`). One period per call; a late keeper may catch up with consecutive calls (never more than the elapsed periods, V3).
 - On success `amount_per_period` moves out of `balance` immediately (`in_flight = true`), so a concurrent `cancel`/`withdraw` can never refund money that is in flight; the callback credits back whatever did not leave.
 - **Callback chain.** A NEAR `then` runs regardless of the previous result, so a token call cannot be made conditional by chaining alone. The chain is: merchant leg → `on_merchant_leg(mandate_id, share, fee)` (private) → only if the full share was delivered and `fee > 0`: fee leg `ft_transfer(fee_receiver, fee)` → `on_collected(mandate_id, share, fee)` (private); otherwise the period is settled in `on_merchant_leg`. Callbacks recompute share/fee from the immutable mandate terms (the arguments are informational).
@@ -62,19 +68,31 @@ Collect ordering uses `then` chaining: merchant leg → (on success) fee leg →
 - **Settlement.** Full share: `collected_periods += 1`, emit `collected`; then `exhausted` if `max_periods` is reached and the mandate is still `Active`. **Partial** share (0 < used < share — not expected from `intents.near`): the period **counts** with the delivered amount, no fee is sent, the rest stays in `balance` (keeps V3; billing compares `merchant_share` with the expected share). **Nothing** delivered: period not counted, full amount credited back, emit `collect_failed {reason: "merchant_transfer_failed"}`. **Fee leg failed:** the period counts (the merchant was paid), the fee stays in the mandate's `balance` (payer-favourable, never retried), `collected.fee = "0"`.
 - Keeper contract: a `collect` transaction either fails with one of the error strings above, or succeeds with exactly one of `collected` (optionally followed by `exhausted`) or `collect_failed` in its receipts' logs. The final return value is `true` when the period was counted.
 
-### 3.3 Gas (v1.2)
+### 3.3 Gas (v1.2, re-derived in v1.4)
 
-Static gas: merchant `ft_transfer_call` 35 Tgas (deployed NEP-141 implementations require `prepaid > 30 Tgas`) or `ft_transfer` 8 Tgas; `on_merchant_leg` 35 Tgas; fee `ft_transfer` 8 Tgas; `on_collected` 10 Tgas; refunds 8 + `on_refunded` 10 Tgas. Unused gas is spread by weight (merchant leg first). **The keeper must attach 150 Tgas to `collect`** (unused gas is refunded); the minimum that schedules the chain is estimated at 80–90 Tgas (the CI gas profile prints the measured value), and less fails the whole call before any state change. The §7 target "`collect` ≤ 60 Tgas" applies to gas **burnt** (measured per receipt by the integration gas profile). `lld/billing.md` §7 says so since billing v1.3.
+`collect` is permissionless and the caller chooses the gas, so every budget that matters is **static** (independent of the attached gas) and `collect` refuses too little gas (AI audits A1-M-1 / A2-M-5 / A1-L-1 / A2-L-5).
+
+| Receipt | Static gas | Why |
+|---|---|---|
+| merchant `ft_transfer_call` (`intents_account`) | 100 Tgas | deployed tokens (near-contract-standards 4.x logic) require `> 30 Tgas` and forward exactly `prepaid − 30 Tgas` to the receiver: `intents.near::ft_on_transfer` gets ≥ 70 Tgas whoever calls (NEAR Intents recommends 100 Tgas for a whole deposit) |
+| merchant `ft_transfer` (`near_account`), fee leg, refunds | 15 Tgas | plain NEP-141 transfer |
+| `on_merchant_leg` | 50 Tgas | its work plus scheduling fee leg (15) and `on_collected` (20) |
+| `on_collected`, `on_refunded` | 20 Tgas each | worst case (exhaust/close) measured at ≈ 1.1 Tgas host gas under mainnet fees, plus wasm |
+
+`MIN_COLLECT_GAS = 170 Tgas` (100 + 50 static + 20 for `collect` itself); below it `collect` fails with `ERR_GAS` before any state change. Gas above the static amounts is spread by weight (merchant leg first). **The keeper attaches 250 Tgas** (`billing.md` §7; ≤ 300 Tgas per call; unused gas is refunded). Payer-signed `cancel`/`withdraw` need ≈ 35 Tgas static plus their own work; too little gas fails before any state change.
+
+The §7 target "`collect` ≤ 60 Tgas" applies to gas **burnt by the vault's design** — the vault's and the token's receipts — and excludes the merchant receiver's own `ft_on_transfer` (the Verifier's cost; the sandbox mock burns 30 Tgas to stand in for it). **Before mainnet deployment (human):** measure the real `intents.near::ft_on_transfer` cost of a USDC/USDT deposit (testnet or a mainnet dry run) and confirm it is well under 70 Tgas; the sandbox cannot import mainnet `intents.near`/USDC with their state.
 
 ### 3.4 `cancel` / `withdraw` (v1.2)
 
 - Both require exactly 1 yoctoNEAR (a full-access key of the payer/merchant). `cancel` checks `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` → `ERR_NOT_ACTIVE`; `withdraw` checks `ERR_NOT_FOUND` → `ERR_UNAUTHORIZED` (payer only) → `ERR_STILL_ACTIVE` → `ERR_IN_FLIGHT` (a refund is pending) → `ERR_INSUFFICIENT_BALANCE` (nothing to withdraw).
 - `cancel` sets `Canceled` at once and refunds `balance` (which excludes an in-flight collect). The `canceled {by, refunded}` event is emitted **when the refund outcome is known** (`refunded` = amount actually returned, `"0"` on failure; immediately with `"0"` when the balance is zero). On a failed refund the amount returns to `balance` for `withdraw`; `withdrawn` is emitted only on success (a failed withdraw restores the balance silently).
 - A collect in flight at cancel time still settles normally (the period was due); its credit-back lands in `balance` for `withdraw`.
+- Merchant cancel requires `merchant_receiver` to be a NEAR account that can sign. Intents accounts that cannot (e.g. EVM-keyed implicit accounts without a wallet contract) cannot cancel; the payer always can (A2-I-5).
 
 ### 3.5 Constructor (v1.2)
 
-`new(allowed_tokens, fee_receiver, max_fee_bps, tvl_caps: [{token, cap, mandate_cap}], intents_account)` is `#[init] #[private]` (called by the vault account in the deploy batch, before its keys are deleted). Rejected with `ERR_BAD_CONFIG`: no tokens, duplicate tokens, not exactly one cap entry per allowed token, a cap for an unknown token, `mandate_cap > cap` (v1.3), `max_fee_bps > 10000`, `fee_receiver`/`intents_account`/a token equal to the vault.
+`new(allowed_tokens, fee_receiver, max_fee_bps, tvl_caps: [{token, cap, mandate_cap}], intents_account)` is `#[init] #[private]` (called by the vault account in the deploy batch, before its keys are deleted). Rejected with `ERR_BAD_CONFIG`: no tokens, duplicate tokens, not exactly one cap entry per allowed token, a cap for an unknown token, `mandate_cap > cap` (v1.3), a zero `mandate_cap` (hence a zero `cap`), `fee_receiver = intents_account`, `fee_receiver` or `intents_account` among the tokens (v1.4, A2-L-2), `max_fee_bps > 10000`, `fee_receiver`/`intents_account`/a token equal to the vault.
 
 ### 3.6 Views (v1.2)
 
@@ -92,6 +110,21 @@ ADR-0008 and T-10 require a per-mandate cap in v1 besides the per-token TVL cap.
 - Collect credit-backs only return tokens the mandate already held, so a mandate never holds more than its cap (V10). The cap applies to deposits only: a mandate created under a cap stays valid; there is no way to change caps after deploy.
 - The deploy values are an owner decision for the deploy runbook (§6), as with `tvl_cap`.
 
+### 3.10 Callback failure (v1.4)
+
+There is **no recovery** for a callback that fails (out of gas, or a future protocol fee change on an immutable contract): its state changes are reverted while the token transfer before it stands (A1-L-1). A failed `on_merchant_leg`/`on_collected` leaves `in_flight = true` forever: further collects fail with `ERR_IN_FLIGHT`, the period is never counted or credited back, the payer can still cancel and recover `balance` but not the in-flight amount, the mandate never closes (storage lock kept, `storage_unregister` → `ERR_OPEN_MANDATES`) and `tvl` keeps counting the period. A failed `on_refunded` leaves `refund_in_flight` set and blocks `withdraw` forever. No permissionless "unstick" is safe, because the vault cannot learn the token outcome afterwards. The protection is margin: the §3.3 static budgets are 10–20× the measured host gas, the floor guarantees them, and the sandbox tests run every path at the minimum accepted gas and assert the callbacks succeeded (`integration-tests/tests/min_gas.rs`). The native tests `failed_collect_callback_leaves_the_period_stuck` and `failed_refund_callback_blocks_withdraw_forever` document the resulting state.
+
+### 3.11 Accepted risks (v1.4)
+
+Recorded with the AI audits; no code change:
+- **TVL-cap squatting** (A1-L-3, A2-M-2): one capital holder can fill a token's cap with refundable mandates (self as merchant, `start_at` up to 366 days ahead) and block new mandates and top-ups at no loss. Per-payer limits are sybil-able. Mitigation: monitor `tvl/cap`, mandates with `merchant_receiver = payer` and far `start_at`; keep the `v2.vault…` deployment runbook pre-staged (§6).
+- **Unparseable merchant-leg success counts as delivered** (§3.2; A1-I-1): solvency over fairness; tokens actually refunded would stay unattributed. Allowed tokens return `U128` strings.
+- **NEP-141 resolve assumption** (A1-L-4): a failed `ft_transfer_call` is read as "nothing moved"; a token whose `ft_resolve_transfer` itself fails after the receiver kept the tokens would break V1 by one share. Only audited near-contract-standards tokens are allowed.
+- **Token blocklists and pauses** (A1-I-3): if a token blocks the payer, refunds fail and stay withdrawable later; if it blocks the vault or the treasury, mandates in that token freeze or fees stay on mandates. Listed in T-10's residual risk.
+- **Stray tokens** (A2-I-4): a plain `ft_transfer` to the vault (no call) is never attributed and cannot be recovered (no admin, V4).
+- **Partial delivery counts the period** (§3.2; A1-I-2, A2-L-1): kept as specified (no fee, remainder stays with the payer, billing handles the short share — `billing.md` §7.1). ADR-0008 ("marks the period failed (not advanced) if the merchant share was not fully delivered") and `quality/stress-test.md` F-22 say the opposite; **an ADR-0008 amendment is needed** so the code is not "fixed" back.
+- **Pagination** (A2-I-3): `get_mandates_by_payer` is stable only between writes (swap-remove on close).
+
 ### 3.9 Spec
 
 The event, view and `msg` shapes in §3.1, §3.6 and §4.1 are the source for the `nearpay-spec` vault schemas of step 4.1.
@@ -108,15 +141,26 @@ EVENT_JSON:{"standard":"nearpay_vault","version":"1.0.0","event":"collected","da
 ```
 `ft_on_transfer` rejections are not events: a plain log line with the error string.
 
+**Validity (v1.4, A2-M-4).** NEAR keeps the logs of failed receipts, and a payer can make a vault receipt log an event and then run out of gas. An event is valid **only** when it is in a successful receipt (`SuccessValue`/`SuccessReceiptId`) executed by the vault account itself; consumers must check both (`rails.md` §8.6). The `standard` field alone proves nothing.
+
 ## 5. Invariants (property-tested and fuzzed)
 
 V1 Σ balances + Σ in-flight ≤ token balance of the vault. V2 a payer can always reach `Canceled` and recover `balance`. V3 per mandate, Σ collected ≤ `collected_periods × amount_per_period` and periods ≤ elapsed periods. V4 no method transfers to any account other than payer, merchant_receiver (via intents or directly) and fee_receiver. V5 no method changes `merchant_receiver`, amount, period or fee after creation.
 
-v1.2 precision and additions: V1 holds with "in-flight" = in-flight collects (`amount_per_period`) + in-flight refunds, and `tvl[token]` equals that sum exactly; between the receipts of one collect, tokens that already left are subtracted from the in-flight term. V3's Σ collected counts the in-flight period once its tokens have left. V5 also covers payer, token, receiver kind, `start_at`, `max_periods` and `ext_ref`. V6 `in_flight` ⇔ exactly one collect awaiting callbacks; `refund_in_flight` = the pending refund. V7 `tvl ≤ tvl_cap` per token. V8 each payer's storage lock count = its open mandates = its index entries. V9 `collect` succeeds iff its §3.2 preconditions hold, else fails with the documented code. V10 (v1.3) per mandate, `balance + in-flight collect + in-flight refund ≤ mandate_cap[token]` and `amount_per_period ≤ mandate_cap[token]`. Where each is tested: `nearpay-contracts/audits/README.md`.
+v1.2 precision and additions: V1 holds with "in-flight" = in-flight collects (`amount_per_period`) + in-flight refunds, and `tvl[token]` equals that sum exactly; between the receipts of one collect, tokens that already left are subtracted from the in-flight term. V3's Σ collected counts the in-flight period once its tokens have left. V5 also covers payer, token, receiver kind, `start_at`, `max_periods` and `ext_ref`. V6 `in_flight` ⇔ exactly one collect awaiting callbacks; `refund_in_flight` = the pending refund. V7 `tvl ≤ tvl_cap` per token. V8 each payer's storage lock count = its open mandates = its index entries. V9 `collect` succeeds iff its §3.2 preconditions hold, else fails with the documented code. V1–V10 are unchanged in v1.4; the property tests now also cover callback failure (documented stuck states) and every audit PoC is a regression test. V10 (v1.3) per mandate, `balance + in-flight collect + in-flight refund ≤ mandate_cap[token]` and `amount_per_period ≤ mandate_cap[token]`. Where each is tested: `nearpay-contracts/audits/README.md`.
 
 ## 6. Deployment
 
 Build reproducibly (`cargo near build reproducible-wasm`), publish wasm hash, deploy + `new(...)`, then delete all access keys from `v1.vault.nearpay.near` (human-signed). Upgrades = new account `v2.vault…` with payer opt-in migration (cancel + recreate).
+
+**Runbook (v1.4, A2-L-4, A2-L-2, A2-M-7):**
+1. Take the wasm and its sha256 from the CI `reproducible` job of the merged commit (built twice with equal hashes; the sandbox suite ran against these bytes). Record the hash with the CI run URL.
+2. Before deploying, check on **every** allowed token: `storage_balance_of(treasury.nearpay.near)` and `storage_balance_of(intents.near)` are registered, and register `v1.vault.nearpay.near` itself (`storage_deposit`). An unregistered treasury makes every fee leg fail forever.
+3. Owner decides the caps (`cap`, `mandate_cap` per token, both > 0) and `max_fee_bps`.
+4. **One batch transaction**, signed by the vault account's full-access key: `DeployContract(wasm)` + `FunctionCall new(...)` + `DeleteKey` for every access key. There is no window in which the code can be replaced.
+5. Publish `view_code` hash = the reproducible hash and `view_access_key_list` = `[]`, and call `get_config` to show the constructor values.
+6. Fund the account so the code and base state are covered (≈ 3 NEAR + buffer); payers fund their own mandates' storage.
+7. Keep the `v2.vault…` runbook (same steps, new account) ready for the accepted risks in §3.11.
 
 ## 7. Tests
 
