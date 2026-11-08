@@ -191,9 +191,8 @@ Made while implementing §3.1/§4.1 (nearpay-agentpay `stage-3/3.2-agentpay`); e
   modification time (ties: greatest kid) signs; every matching file verifies. A malformed kid or short key fails boot.
 - **Operation status.** `quoted → settled | failed` only (the spec's `NearIntentsOperationStatus` also lists
   `settling`, unused: settle never claims a non-final state).
-- **Kit 0.3.0.** Until `@nearpay-internal/intents` 0.3.0 is published the four helpers live in one adapter file
-  (`src/domain/near-intents/kit.ts`, a copy of kit `stage-3/3.1-kit`), tested against the spec vectors; switching is a
-  re-export.
+- **Kit 0.3.0.** The binding and operation-token helpers come from `@nearpay-internal/intents` 0.3.0 through one
+  import point (`src/domain/near-intents/kit.ts`), tested against the spec vectors.
 
 ## 5. API
 
