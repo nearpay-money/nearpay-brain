@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.5 (owner decisions 2026-11-07, ADR-0020: Q-VEN-01 superseded, Q-VEN-02 deferred, Q-VEN-05 decided for v1; OQ-T-03 added) · Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.6 (step 4.1: proposed resolution for OQ-T-03, not decided) · Version 1.5 (owner decisions 2026-11-07, ADR-0020: Q-VEN-01 superseded, Q-VEN-02 deferred, Q-VEN-05 decided for v1; OQ-T-03 added) · Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -36,9 +36,21 @@
 | **OQ-T-02** | ~~Request/response shapes of ops HTTP routes for compliance cases, blocklist edits and sentinel findings~~ | **Decided:** specified together with the Stage 2 console, their first network consumer; Stage 1 keeps these actions in the in-process ops CLI with no network path | Closed 2026-11-05 |
 | **OQ-T-03** | How are `auto_debit` mandates exercised in test mode, now that Stage 4 exits on a test-mode E2E instead of a mainnet demo (ADR-0020)? Neither the sandbox nor billing specifies a test-mode vault | Billing + sandbox LLD owners specify a sandbox vault stand-in (mandate create/collect/cancel/withdraw events in the same shapes as the vault's) in step 4.1; until then Stage 4 auto-debit E2E is blocked | Step 4.1 |
 
+
 **OQ-T-01 write-up.** The owner chose typed list filters over a Stripe-style query language: one validated mechanism, no parser, each filter backed by a deliberate index. `GET /v1/payment_intents` adds `amount`, `currency`, `asset_id` and `metadata[key]` filters in Stage 2; `/search` is removed from the conventions and the payments LLD.
 
 **OQ-T-02 write-up.** The owner chose to shape these endpoints with the Stage 2 console screens rather than guess them now. Stage 1 operators use `nearpay-testbed/ops` (in-container CLI). The KYB decision and kill-switch endpoints stay in the spec as already specified.
+
+**OQ-T-03 — proposed resolution (step 4.1, 2026-11-08; not decided — billing and sandbox LLD owners and the lead decide).** The sandbox serves a **vault stand-in** that billing's keeper and rails' indexer reach through their normal code paths, with byte-identical shapes:
+- **NEAR JSON-RPC subset** for one test vault account (e.g. `vault.sandbox.near`, the test-mode `NP_VAULT_CONTRACT`): `broadcast_tx_commit` / `send_tx` for `collect`, `cancel`, `withdraw`, `storage_deposit`; `query` `call_function` for `get_mandate`, `get_mandates_by_payer`, `next_collect_at`, `get_config`. The keeper points `NP_NEAR_RPC_URLS` at the sandbox in test mode (INV-8: live keys and RPC never see it).
+- **Same rules** as `lld/contracts-vault.md` §3.1–§3.8 (msg schema, check orders, caps, periods, refunds) and the same view JSON (§3.6).
+- **Failures** have the NEAR RPC shape: `status.Failure.ActionError.kind.FunctionCallError.ExecutionError = "Smart contract panicked: ERR_…"`. The keeper matches the `ERR_[A-Z_]+` code.
+- **Successes** carry the contract's exact `EVENT_JSON:{"standard":"nearpay_vault","version":"1.0.0",…}` lines (§4.1) in `receipts_outcome[].outcome.logs` with `executor_id` = the vault, and `status.SuccessValue` = base64 of `true`/`false`. The same receipt outcomes are appended to `GET /sim/intents/events`, so rails' sandbox indexer adapter forwards `evt.rails.vault.event` unchanged.
+- **Funding:** a test helper `POST /sim/vault/ft_transfer_call {payer, token, amount, msg}` stands in for the payer's wallet. It applies §3.1, and a rejection appears as a plain `ERR_…[: detail]` log plus a refund, as on chain.
+- **Outcome scenarios** are chosen like the 1Click scenario engine, by the last two digits of `amount_per_period`: `00` success, `91` merchant leg fails (`collect_failed`), `92` fee leg fails (`collected` with `fee: "0"`), `93` the cancel/withdraw refund fails (`canceled` with `refunded: "0"`), `94` partial merchant delivery.
+- **Time:** `POST /sim/vault/advance {secs}` moves the stand-in's clock so period 2 becomes due without lowering the 86400 s minimum.
+- **Parity:** the contract's event lines, error strings and view JSON are exported as fixtures to `nearpay-spec`; the vault's unit tests and the stand-in's contract tests both assert against them.
+- **Alternative:** run the real wasm on a neard sandbox in the testbed Compose (highest fidelity). It needs the sandbox binary in Compose and an indexer block source for the sandbox RPC (neardata/Lake do not exist there), so it is heavier for the v1 date.
 
 ## Planned `@nearpay/spec` 0.1.5 (additive) — change requests from steps 1.2 and 1.3
 

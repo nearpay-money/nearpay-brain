@@ -1,6 +1,6 @@
 # Security Architecture and Threat Model
 
-> Version 1.1 (ADR-0020: AI-agent vault audits, merges by the lead agent, local screening, self-declared KYB — T-10, T-14, T-15 updated) · Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
+> Version 1.2 (T-10 residual risks from the AI vault audits 2026-11-08) · Version 1.1 (ADR-0020: AI-agent vault audits, merges by the lead agent, local screening, self-declared KYB — T-10, T-14, T-15 updated) · Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
 
 ## 1. What we protect (ranked)
 
@@ -80,7 +80,7 @@ flowchart LR
 | **T-07** | Agent payment replay / reuse for another resource (S, T) | Verifier nonces; `memo = binding` (hash of requirement + resource URL + merchant); deadline ≤ `maxTimeoutSeconds` | Low |
 | **T-08** | Quote/attempt flooding to exhaust 1Click quota (D) | Turnstile before live quotes; per-session/IP/merchant limits; indicative pricing without quotes; cost alarms | Low |
 | **T-09** | Price oracle manipulation / stablecoin depeg (T) | Dual-source deviation check; depeg guard; snapshot per attempt; quote validity bound | Low |
-| **T-10** | Vault contract bug drains mandates (T, E) | Minimal code, no admin fund methods, no access keys, per-mandate and global caps, two independent audits, property tests + fuzzing, bug bounty. **v1 (ADR-0020):** the two external audits are replaced by independent AI-agent audits; mainnet deployment stays human-signed; low global TVL cap; a human audit is recommended before the vault holds material value | Medium (inherent; weaker assurance in v1 until a human audit) |
+| **T-10** | Vault contract bug drains mandates (T, E) | Minimal code, no admin fund methods, no access keys, per-mandate and global caps, two independent audits, property tests + fuzzing, bug bounty. **v1 (ADR-0020):** the two external audits are replaced by independent AI-agent audits; mainnet deployment stays human-signed; low global TVL cap; a human audit is recommended before the vault holds material value. **Residual (AI audits 2026-11-08, `lld/contracts-vault.md` §3.10–§3.11):** no recovery for a failed callback (mitigated by static gas margins and a `collect` gas floor); TVL-cap squatting by a capital holder (monitoring, pre-staged v2 account); token blocklists/pauses can freeze mandates in that token; NEP-141 resolve assumption | Medium (inherent; weaker assurance in v1 until a human audit) |
 | **T-11** | Supply-chain compromise of checkout/widget (T) | Pinned lockfiles, `npm ci --ignore-scripts`, provenance, reproducible static build, SRI, no runtime third-party scripts except Turnstile + bundled wallet SDKs, separate deploy credentials | Medium |
 | **T-12** | Insider / ops abuse (E, R) | Console behind Cloudflare Access + hardware keys; RBAC; two-person rule for merchant suspension/unsuspension; immutable audit log shipped to object-locked storage | Low |
 | **T-13** | DB exfiltration (I) | PII field encryption; secrets hashed/encrypted; backups encrypted; least-privilege roles per service | Low |
