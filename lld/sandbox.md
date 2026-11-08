@@ -1,6 +1,6 @@
 # LLD — `nearpay-sandbox`
 
-> Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
+> Version 1.5 (step 3.2b, spec 0.3.1: `SimTx.transfers[].from` §3, documented test addresses of the simulated payer and liquidity provider §4.1) · Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -18,7 +18,7 @@ Deterministic simulator for test mode, local development and E2E: a **1Click-com
 | `POST /v0/quote` | 1Click | validates the same schema; `amountIn = ceil(amountOut × price ratio × (1 + appFee + 20 bps))`; deterministic deposit address per chain format (`0x` + keccak(seed)[12..32] for EVM, `sbx-<hash>.near` for NEAR, base58 for Solana, bech32 for BTC); `signature` = Ed25519 (sandbox key) with the 1Click construction (the SDK's `quoteHash`), so `verifyQuoteSignature(quote, sandboxKey)` verifies it (SP-01); like 1Click, the signed request leaves `appFees` out and the response echoes `appFees` split 50/50 with a fee account of its own (rails §8.1); the scenario comes from `scenario_amount`, which rails sets to the payment's pricing amount (spec 0.1.1) |
 | `GET /v0/status` | 1Click | scenario timeline (below) |
 | `POST /v0/deposit/submit` | 1Click | marks deposit detected |
-| `GET /sim/chains/{caip2}/tx/{hash}` | chain RPC | `{finalized, transfers:[{token, to, amount}]}` for sandbox verifiers |
+| `GET /sim/chains/{caip2}/tx/{hash}` | chain RPC | `{finalized, transfers:[{token, from, to, amount}]}` for sandbox verifiers; `from` (spec 0.3.1) is the sender per §4.1 — rails fills `Evidence.sender` from it (rails §20.1); rows recorded before v1.5 answer `from: null` (unknown) |
 | `POST /sim/deposits` | — | `{deposit_address, memo?, amount_in?}` simulate the payer's deposit (used by checkout test-mode "Simulate payment" via payments) |
 | `POST /sim/advance` | — | `{deposit_address, to: deposit\|processing\|success\|refund\|fail}` step control |
 | `POST /sim/intents/simulate` · `/execute` | `simulate_intents` / `execute_intents` | real NEP-413 / ERC-191 / raw Ed25519 signature verification (`@nearpay-internal/intents`), nonces, simulated balances per account (seeded via `/sim/intents/fund`), mainnet rejection messages, atomic batches; named accounts register the first key that signs for them. Emits DIP-4 / NEP-245 events shaped like mainnet: the binding memo of a transfer intent is on the DIP-4 `transfer` event only, the NEP-245 `mt_transfer` carries none (SP-14) |
@@ -49,6 +49,29 @@ Scenario key = last two digits of `scenario_amount` (the fiat amount in minor un
 | `06` | like `00`; a deposit also pays the older open quotes of the same payment (duplicate settlement → overpayment). Stage 2: quotes are grouped by `scenario_group` when present; on refund legs a deposit to one leg also settles the other open legs of the same refund (duplicate refund → payments records a `duplicate` leg). Without `scenario_group` the Stage 1 grouping applies. As implemented (v1.4): group key = `sha256("group|" + kind + "|" + scenario_group)`, else the Stage 1 `sha256(recipient|destinationAsset|refundTo|scenario_amount)`; a payment deposit pays **older** open attempts only (Stage 1), a refund deposit pays **every other** open leg, older or newer; a refund leg's duplicate deposit counts as made **in time**, so an expired leg (deadline passed, still `PENDING_DEPOSIT`) settles `SUCCESS` — the "paid the expired leg and its replacement" case payments must see — while an expired payment attempt is still refunded (`DEPOSIT_AFTER_DEADLINE`, Stage 1). Every scenario applies to refund legs by the refund amount's last two digits (e.g. `02` underpays the leg → the merchant is refunded at the deadline) |
 | `07` | success arrives 5 min after the session's `expires_at` |
 | refund address contains `sanctioned` | compliance blocks (handled by compliance sandbox rule) |
+
+### 4.1 Test addresses and transfer senders (v1.5)
+
+Documented test addresses of the **simulated payer** (adopted from payments' test helper, payments §21.5, so one set exists platform-wide; `SIMULATED_PAYER` in `src/simulated-chains/addresses.ts`):
+
+| Family | Address |
+|---|---|
+| EVM | `0x000000000000000000000000000000000000dEaD` |
+| NEAR | `sandbox-payer.near` |
+| Solana | `11111111111111111111111111111111` |
+| Bitcoin | `bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq` (a chain with another bech32 HRP gets an address derived from seed `sandbox-payer`) |
+
+The **simulated liquidity provider** is `sbx-solver.near` on NEAR (the `mt_transfer` `old_owner_id` / DIP-4 `account_id` of every Intents payout) and, on other chains, the address derived like a deposit address from seed `sbx-solver` (`solverAddress(chain)`).
+
+Sender (`from`) of each simulated transfer recorded in `sim_txs`:
+
+| Transfer | `from` |
+|---|---|
+| Deposit by `/sim/deposits`, `/v0/deposit/submit`, `/sim/advance` or a scenario `06` duplicate | the quote's `refundTo` when the refund address is on the deposit chain (`refundType: ORIGIN_CHAIN`, or `INTENTS` with a NEAR-origin quote) — the wallet that pays is the one refunds return to; otherwise the simulated payer of the origin chain |
+| Deposit into an `INTENTS`-deposit quote by a Verifier transfer (`/sim/intents/execute`, `/sim/intents/transfers`) | the transfer's signer / `from` (a NEAR account) |
+| Payout at `SUCCESS` and refund at `REFUNDED` / excess | the simulated liquidity provider (`sbx-solver.near` for Intents recipients, consistent with the indexer events rails attributes) |
+
+On mainnet a 1Click delivery's sender is likewise the delivering solver, never the payer's origin wallet (rails §20.1).
 
 ## 5. Data
 
