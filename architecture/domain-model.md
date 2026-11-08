@@ -1,6 +1,6 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.4 (step 2.1, spec 0.2.0: `inv_`, `aud_`, `opa_`, `bl_`, `rcn_` prefixes; refund edges `canceled|failed → succeeded` §4.4; reconciliation runs §6) · Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.5 (step 3.1, spec 0.3.0: `txr_`, `il_`, `si_` prefixes; billing state machines §4.5) · Version 1.4 (step 2.1, spec 0.2.0: `inv_`, `aud_`, `opa_`, `bl_`, `rcn_` prefixes; refund edges `canceled|failed → succeeded` §4.4; reconciliation runs §6) · Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
@@ -29,6 +29,9 @@
 | `prod_` / `price_` | Product / Price | billing |
 | `in_` | Invoice | billing |
 | `sub_` | Subscription | billing |
+| `txr_` | TaxRate (Stage 3) | billing |
+| `il_` | Invoice line item (Stage 3) | billing |
+| `si_` | Subscription item (Stage 3) | billing |
 | `md_` | Mandate (vault mirror) | billing |
 | `ex_` | Execution (route run) | rails |
 | `obs_` | Provider observation | rails |
@@ -270,16 +273,24 @@ stateDiagram-v2
     draft --> open: finalize (creates PaymentIntent)
     open --> paid: payment_intent.succeeded
     open --> void: voided
-    open --> uncollectible: dunning exhausted
+    open --> uncollectible: marked by merchant / dunning exhausted (subscription invoices)
     uncollectible --> paid: late payment (INV-3)
+    draft --> [*]: deleted
   }
   state Subscription {
     [*] --> incomplete
+    [*] --> trialing: trial_period_days
+    trialing --> active: trial ends (first invoice issued)
     incomplete --> active: first invoice paid / mandate funded
+    incomplete --> canceled: first invoice unpaid after its reminders
     active --> past_due: renewal unpaid at due date
     past_due --> active: paid
-    past_due --> canceled: dunning exhausted (policy)
-    active --> canceled: canceled
+    past_due --> canceled: dunning exhausted (on_exhausted = cancel)
+    past_due --> unpaid: dunning exhausted (on_exhausted = unpaid)
+    unpaid --> active: latest invoice paid
+    active --> canceled: canceled (now or at period end)
+    trialing --> canceled: canceled
+    unpaid --> canceled: canceled
   }
   state Mandate {
     [*] --> pending_funding
@@ -291,6 +302,8 @@ stateDiagram-v2
     active --> canceled: payer or merchant cancels
   }
 ```
+
+Billing objects in v1 (step 3.1): invoices are collected with `send_invoice` only; `paid` and `void` are final — money that still settles for them (INV-3) is listed on the invoice and refunded by the merchant, never applied. Exact rules: `lld/billing.md` §4, §11.
 
 ### 4.6 SettlementDestination
 

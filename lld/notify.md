@@ -1,6 +1,6 @@
 # LLD — `nearpay-notify`
 
-> Version 1.5 (spec 0.2.1 implementation: manager changes to owners and admins, recovery and rotation audiences, names via ?user= — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: recovery and secret-rotation mails, recipients by user, `created_by` on destinations — §"Spec 0.2.1 contract changes") · Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
+> Version 1.6 (step 3.1, spec 0.3.0: billing templates §4) · Version 1.5 (spec 0.2.1 implementation: manager changes to owners and admins, recovery and rotation audiences, names via ?user= — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: recovery and secret-rotation mails, recipients by user, `created_by` on destinations — §"Spec 0.2.1 contract changes") · Version 1.4 (step 2.2 implementation, spec 0.2.0: Stage 2 audiences, refund receipt and approval-request rules, credential wipe, brand §4; console link §7) · Version 1.3 (step 2.1 contracts: member, invitation, operator-enrolment, KYB-submitted and approval-request mails §4–§5, stage map §9) · Version 1.2 (step 1.2 implementation findings folded: data §3, templates and copy rules §4, event fan-out §5, SMTP sending §6, configuration §7, stage map §9) · Version 1.1 audited (`audits/notify.md`) · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -44,10 +44,10 @@ Retention: messages are deleted after `NP_MESSAGE_RETENTION_DAYS` (90). A sent `
 | `ops.approval_requested` (step 2.1) | `evt.compliance.account.action_requested`, `evt.sentinel.kill_switch.release_requested` | security contacts (config) |
 | `account.suspended` · `account.reinstated` | `evt.compliance.account.*` | owners |
 | `review.opened` · `review.closed` | `evt.compliance.review.*` | owners/admins |
-| `payment.receipt` | `evt.payments.payment_intent.succeeded` when the session has a customer email and the account enables receipts; test-mode receipts only when `NP_TEST_MODE_RECEIPTS=true` (default `false`; Compose local sets `true` because Mailpit catches every mail) | customer |
+| `payment.receipt` | `evt.payments.payment_intent.succeeded` when the session has a customer email and the account enables receipts (step 3.1: not for `source: invoice` intents — `invoice.paid` replaces it); test-mode receipts only when `NP_TEST_MODE_RECEIPTS=true` (default `false`; Compose local sets `true` because Mailpit catches every mail) | customer |
 | `refund.receipt` | `evt.payments.refund.succeeded` | customer |
-| `invoice.issued` · `invoice.reminder` · `invoice.paid` | `evt.billing.invoice.*` | customer |
-| `subscription.renewal_upcoming` · `mandate.insufficient_funds` | `evt.billing.*` | customer |
+| `invoice.issued` · `invoice.reminder` · `invoice.paid` · `invoice.voided` (step 3.1) | `evt.billing.invoice.sent` · `.reminder` · `.paid` · `.voided` — data from billing `getInvoiceNotificationContext` (`?reminder=<n>` for reminders; includes the hosted link with the invoice secret, never in events) | customer (`customer_email` of the context; null → no mail) |
+| `subscription.renewal_upcoming` (step 3.1) · `mandate.insufficient_funds` (Stage 4) | `evt.billing.subscription.renewal_upcoming` (`getSubscriptionNotificationContext`; nothing when `cancel_at_period_end`) · `evt.billing.mandate.insufficient_funds` | customer |
 | `webhooks.endpoint_disabled` | `evt.webhooks.endpoint.disabled` | developers + owners |
 | `ops.kill_switch` · `ops.audit_finding` | `evt.sentinel.*` | security contacts (config) |
 
@@ -86,7 +86,7 @@ Template snapshot tests per locale; dedupe; suppression; provider fallback; reci
 
 ## 9. Stage mapping
 
-Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link, welcome, security destination emails, KYB decision, suspension, reviews, payment receipt, kill switch, audit finding, webhooks endpoint disabled). Stage 2: refund receipts (payments), member, invitation, destination-approval, KYB-submitted, operator-enrolment and approval-request emails (step 2.1 contracts; implemented in step 2.2 with the brand restyle and self-declared KYB wording). Stage 3: billing templates. Stage 5: Postmark/SES, bounce handling.
+Stage 1: Mailpit, every subject the event catalogue routes to notify (magic link, welcome, security destination emails, KYB decision, suspension, reviews, payment receipt, kill switch, audit finding, webhooks endpoint disabled). Stage 2: refund receipts (payments), member, invitation, destination-approval, KYB-submitted, operator-enrolment and approval-request emails (step 2.1 contracts; implemented in step 2.2 with the brand restyle and self-declared KYB wording). Stage 3: billing templates (`invoice.issued`, `invoice.reminder`, `invoice.paid`, `invoice.voided`, `subscription.renewal_upcoming`; spec `BILLING_EMAIL_TEMPLATES`; a mail is skipped when the context's `livemode` differs from the event's or the status no longer fits, e.g. a reminder for an invoice paid meanwhile; test-mode mails follow `NP_TEST_MODE_RECEIPTS`). Stage 5: Postmark/SES, bounce handling.
 
 ## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
 
