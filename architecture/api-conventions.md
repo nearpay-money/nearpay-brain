@@ -1,6 +1,6 @@
 # Public API and Webhook Conventions
 
-> Version 1.2 (step 2.1, spec 0.2.0: `refund.pending` in the event catalogue §9) · Version 1.1 (list filters instead of search endpoints, ADR-0018) · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
+> Version 1.3 (step 3.1, spec 0.3.0: `invoice.sent` in the event catalogue and the events SSE stream §9) · Version 1.2 (step 2.1, spec 0.2.0: `refund.pending` in the event catalogue §9) · Version 1.1 (list filters instead of search endpoints, ADR-0018) · Normative for `nearpay-spec`. Every public endpoint and event MUST follow this document; deviations need an ADR.
 
 ## 1. Surfaces
 
@@ -99,7 +99,7 @@ The sandbox also exposes `POST /v1/test_helpers/executions/{id}/advance` for ste
 - **Signature header:** `NearPay-Signature: t=1793900000,v1=<hex HMAC-SHA256(secret, t + "." + raw_body)>,v1a=<base64 Ed25519(sig over same string)>`. Ed25519 public keys at `https://api.nearpay.money/v1/webhook_signing_keys` (JWKS). Tolerance 300 s; constant-time compare; **verify the raw body bytes** (SDK helpers do this).
 - **Delivery:** at-least-once, unordered, timeout 10 s, success = any 2xx. Retries with exponential backoff + jitter (≈ 1 m, 5 m, 30 m, 2 h, 5 h, 10 h, then every 12 h) up to 72 h. After 72 h of continuous failure the endpoint is disabled and owners are emailed.
 - **Egress:** from published static IPs (`docs.nearpay.money/ips`); private/reserved ranges are refused; DNS resolution pinned per attempt.
-- **Retention:** events 30 days; `GET /v1/events`, `POST /v1/events/{id}/resend`; CLI `nearpay listen` forwards to localhost.
+- **Retention:** events 30 days; `GET /v1/events`, `POST /v1/events/{id}/resend`; `GET /v1/events/stream` (SSE, test-mode API keys or a dashboard session; webhooks LLD §5.1); CLI `nearpay listen` reads the stream and forwards to localhost.
 
 **Event catalogue (v1)**
 
@@ -108,6 +108,6 @@ The sandbox also exposes `POST /v1/test_helpers/executions/{id}/advance` for ste
 | Checkout | `checkout.session.completed`, `checkout.session.expired` |
 | Payments | `payment_intent.created`, `.processing`, `.succeeded`, `.payment_failed`, `.requires_review`, `.overpaid`, `.canceled` |
 | Refunds | `refund.created`, `refund.requires_action`, `refund.pending`, `refund.succeeded`, `refund.failed`, `refund.canceled` |
-| Billing | `invoice.created`, `.finalized`, `.paid`, `.payment_failed`, `.overdue`, `.voided`, `.marked_uncollectible`; `customer.subscription.created`, `.updated`, `.deleted`, `.renewal_upcoming`; `mandate.activated`, `.collected`, `.insufficient_funds`, `.canceled`, `.exhausted` |
+| Billing | `invoice.created`, `.finalized`, `.sent`, `.paid`, `.payment_failed`, `.overdue`, `.voided`, `.marked_uncollectible`; `customer.subscription.created`, `.updated`, `.deleted`, `.renewal_upcoming`; `mandate.activated`, `.collected`, `.insufficient_funds`, `.canceled`, `.exhausted` |
 | Agent | `agent_payment.settled`, `agent_payment.failed` |
 | Account | `account.updated`, `settlement_destination.pending`, `.activated`, `.disabled`, `review.opened`, `review.closed` |
