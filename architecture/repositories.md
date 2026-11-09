@@ -57,7 +57,7 @@ flowchart TB
 | Service image | `ghcr.io/nearpay-money/<service>@sha256:…` | GHCR (+ Zot cache in-cluster) |
 | Public npm packages | `@nearpay/js`, `@nearpay/react`, `@nearpay/node`, `@nearpay/x402`, `@nearpay/mcp`, `@nearpay/agent-signer`, `@nearpay/cli`, `@nearpay/spec` | npm (⚠ scope availability: Q-BIZ-03) |
 | Internal npm packages | `@nearpay-internal/*` | GitHub Packages (private) |
-| Contracts | `v<N>.vault.nearpay.near` (immutable per version) | NEAR mainnet |
+| Contracts | the owner-controlled vault account (decided at deploy, mainnet checklist A.4), one per version, immutable — not under `nearpay.near`, which NearPay does not control | NEAR mainnet |
 | Hosts | `api.`, `pay.`, `js.`, `dashboard.`, `ops.`, `docs.`, `status.` + apex `nearpay.money` | Cloudflare DNS |
 
 ## 4. Catalogue
@@ -87,7 +87,7 @@ flowchart TB
 | 19 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | Stage 1 (step 1.3) |
 | 20 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | Stage 1 (step 1.3) |
 | 21 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | Stage 3 (step 3.3) |
-| 22 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: v1.vault.nearpay.near (immutable) | Stage 4 (step 4.1) |
+| 22 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: the owner-controlled vault account (decided at deploy, mainnet checklist A.4; immutable) | Stage 4 (step 4.1) |
 | 23 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | Stage 5 (step 5.1) |
 | 24 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | Stage 1 (step 1.1) |
 | 25 | `nearpay-testbed` | Platform | tests | CI + scheduled jobs | Stage 1 (steps 1.3–1.5) |
