@@ -4,7 +4,9 @@
 
 ## 1. Scope
 
-`subscription-vault` deployed at `v1.vault.nearpay.near` with **no access keys** after deployment. Holds NEP-141 balances per mandate; payer-funded, payer-cancellable; permissionless `collect`.
+`subscription-vault` deployed at the owner-controlled vault account (decided at deploy, mainnet checklist A.4) with **no access keys** after deployment. Holds NEP-141 balances per mandate; payer-funded, payer-cancellable; permissionless `collect`.
+
+Why no fixed name: NearPay does not control `nearpay.near` (on mainnet it belongs to someone else), so a `*.nearpay.near` vault could be created and filled by them; services therefore have no default vault account (`NP_VAULT_CONTRACT` unset = live auto-debit off).
 
 ## 2. State
 
@@ -156,11 +158,11 @@ v1.2 precision and additions: V1 holds with "in-flight" = in-flight collects (`a
 
 ## 6. Deployment
 
-Build reproducibly (`cargo near build reproducible-wasm`), publish wasm hash, deploy + `new(...)`, then delete all access keys from `v1.vault.nearpay.near` (human-signed). Upgrades = new account `v2.vault…` with payer opt-in migration (cancel + recreate).
+Build reproducibly (`cargo near build reproducible-wasm`), publish wasm hash, deploy + `new(...)`, then delete all access keys from the vault account (human-signed). Upgrades = a new owner-controlled account per version (`v2.…`) with payer opt-in migration (cancel + recreate).
 
 **Runbook (v1.4, A2-L-4, A2-L-2, A2-M-7):**
 1. Take the wasm and its sha256 **only from a `push` run on `main`** (or a release tag) whose **overall conclusion is `success`** — never from a `pull_request` run (re-audit N-2: cargo-near embeds the source commit in the wasm's NEP-330 metadata, so a PR run's hash belongs to a commit that may not survive the merge and cannot be verified later). The hash to use is the one printed as `DEPLOYABLE` by the final `deployable` job, which `needs:` every other job (lint, unit, wasm, integration, reproducible, fuzz) and runs only on push to main (re-check 2 R-2); the `reproducible` job alone only shows a candidate. That run built the wasm twice with equal hashes and ran the sandbox suite against these bytes. Record the hash with the commit and the run URL.
-2. Before deploying, check on **every** allowed token: `storage_balance_of(treasury.nearpay.near)` and `storage_balance_of(intents.near)` are registered, and register `v1.vault.nearpay.near` itself (`storage_deposit`). An unregistered treasury makes every fee leg fail forever.
+2. Before deploying, check on **every** allowed token: `storage_balance_of(treasury.nearpay.near)` and `storage_balance_of(intents.near)` are registered, and register the vault account itself (`storage_deposit`). An unregistered treasury makes every fee leg fail forever.
 3. Owner decides the caps (`cap`, `mandate_cap` per token, both > 0) and `max_fee_bps`.
 4. **One batch transaction**, signed by the vault account's full-access key: `DeployContract(wasm)` + `FunctionCall new(...)` + `DeleteKey` for every access key. There is no window in which the code can be replaced.
 5. Publish `view_code` hash = the reproducible hash and `view_access_key_list` = `[]`, and call `get_config` to show the constructor values.
