@@ -17,7 +17,7 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | dev-ready (v1.7 + spec 0.2.1 update) |
 | [webhooks.md](webhooks.md) | `nearpay-webhooks` | [audit](audits/webhooks.md) | dev-ready (v1.10: `mandate.*` types — spec 0.4.0) |
 | [notify.md](notify.md) | `nearpay-notify` | [audit](audits/notify.md) | dev-ready (v1.8: payer mandate mails — spec 0.4.0) |
-| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.10: Stage 4 keeper, linkage rules and auto-debit contracts §14 — spec 0.4.0) |
+| [billing.md](billing.md) | `nearpay-billing` | [audit](audits/billing.md) | dev-ready (v1.11: step 4.2 auto-debit as built — implementation decisions §15 d1–d17, `migrations/0003_mandates.sql`; Stage 4 keeper, linkage rules and auto-debit contracts §14 — spec 0.4.0) |
 | [sandbox.md](sandbox.md) | `nearpay-sandbox` | [audit](audits/sandbox.md) | dev-ready (v1.8.1: step 4.2 as built — stand-in "As implemented" with the serde_json input layer, commit-ordered feed, scenario `94` on `near_account`, Solana/Bitcoin as built; subscription-vault stand-in (OQ-T-03), Solana and Bitcoin simulation — spec 0.4.0) |
 | [checkout-and-js.md](checkout-and-js.md) | `nearpay-checkout`, `nearpay-js` | [audit](audits/checkout-and-js.md) | dev-ready (v1.7: Solana wallet path, Solana Pay / BIP-21 QR — spec 0.4.0) |
 | [dashboard-and-console.md](dashboard-and-console.md) | `nearpay-dashboard`, `nearpay-console` | [audit](audits/dashboard-and-console.md) | dev-ready (v1.9) |
