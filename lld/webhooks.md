@@ -1,6 +1,6 @@
 # LLD — `nearpay-webhooks`
 
-> Version 1.10 (step 4.1, spec 0.4.0: `mandate.*` types §4) · Version 1.9 (step 3.2 implementation: stream tail dedupe window, slots as a Valkey sorted set, close reasons, `drain()` semantics, NOTIFY from `…/test` too §5.1; billing ingest guards §4 — §"Step 3.2 implementation") · Version 1.8 (step 3.1, spec 0.3.0: events SSE stream `streamEvents` — §5.1, stage map §12) · Version 1.7 (spec 0.2.1 implementation: secret_rotated actor and version — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: `evt.webhooks.endpoint.secret_rotated` — §"Spec 0.2.1 contract changes") · Version 1.6 (step 2.2 implementation: mode-less `account.updated` → one event per mode, review skip, INV-8 mode check §4/§6; `resend_no` and events unique per mode §3; rotation transition, `secrets.expire` job, resend targets/limits §5–§6) · Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
+> Version 1.11 (step 4.2 implementation, spec 0.4.0: mandate ingest — §"Step 4.2 implementation") · Version 1.10 (step 4.1, spec 0.4.0: `mandate.*` types §4) · Version 1.9 (step 3.2 implementation: stream tail dedupe window, slots as a Valkey sorted set, close reasons, `drain()` semantics, NOTIFY from `…/test` too §5.1; billing ingest guards §4 — §"Step 3.2 implementation") · Version 1.8 (step 3.1, spec 0.3.0: events SSE stream `streamEvents` — §5.1, stage map §12) · Version 1.7 (spec 0.2.1 implementation: secret_rotated actor and version — §"Spec 0.2.1 contract changes") · Spec 0.2.1 update (spec 0.2.1: `evt.webhooks.endpoint.secret_rotated` — §"Spec 0.2.1 contract changes") · Version 1.6 (step 2.2 implementation: mode-less `account.updated` → one event per mode, review skip, INV-8 mode check §4/§6; `resend_no` and events unique per mode §3; rotation transition, `secrets.expire` job, resend targets/limits §5–§6) · Version 1.5 (step 2.1 contracts, spec 0.2.0: secret rotation and resend §5, `account.updated`, `review.*` (rendered as `PublicReview`) and `refund.pending` types §4/§7, stage map §12) · Version 1.4 (step 1.4, spec 0.1.5: delivery log §5, open `enabled_events` items §5, the producer's `sequence` §4/§6, UUIDv7 delivery ids §3) · Version 1.3 (step 1.2 implementation findings folded: data §3, ingest and dispatch §6, URL policy §5/§8, configuration §9) · Version 1.1 audited (`audits/webhooks.md`) · API conventions §9 · Flows §8 · FR-WH-01…04 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
@@ -177,7 +177,8 @@ Signature vectors shared with `@nearpay/node` verify helper; property tests (ste
 |---|---|
 | 1 | endpoints CRUD, ingest for payments + agentpay events, dispatch with HMAC + Ed25519, retries, events API, signing keys, egress proxy, delivery log (`GET …/deliveries`, step 1.4, spec 0.1.5) |
 | 2 | refunds (payments' types) / account / review events, secret rotation, resend (step 2.1 contracts) |
-| 3 | billing/mandate events, `GET /v1/events/stream` (§5.1, spec 0.3.0) for the CLI and the dashboard live tail |
+| 3 | billing events (`invoice.*`, `customer.subscription.*`), `GET /v1/events/stream` (§5.1, spec 0.3.0) for the CLI and the dashboard live tail |
+| 4 | `mandate.*` events (8 types, public `Mandate`; spec 0.4.0, billing §14 d10) — no new routes |
 
 ## Spec 0.2.1 contract changes (step 2.2/2.3 change requests, `nearpay-spec/CHANGELOG.md`)
 
@@ -189,7 +190,7 @@ Signature vectors shared with `@nearpay/node` verify helper; property tests (ste
 
 ## Step 3.2 implementation (spec 0.3.0, kit 0.2.1 with the kit 0.3.0 SSE API isolated, v1.9)
 
-**Billing ingest (§4).** The 12 billing subjects (8 `invoice.*`, 4 `customer.subscription.*`) are ingested like every other type; `evt.billing.invoice.reminder` has no public type (notify only), mandates wait for Stage 4. Two guards at ingest, both dead letters (`consumer:webhooks`), never a public event:
+**Billing ingest (§4).** The 12 billing subjects (8 `invoice.*`, 4 `customer.subscription.*`) are ingested like every other type; `evt.billing.invoice.reminder` has no public type (notify only), mandates followed in Stage 4 (§"Step 4.2 implementation"). Two guards at ingest, both dead letters (`consumer:webhooks`), never a public event:
 - an invoice whose `hosted_invoice_url` is not null (the URL carries the invoice secret; `InvoiceEvent` makes it null on the bus, the public `Invoice` schema alone would accept it);
 - INV-8 is checked on every nested `livemode`, not only the object's own (a subscription's item `price` snapshots carry one).
 
@@ -203,3 +204,9 @@ Signature vectors shared with `@nearpay/node` verify helper; property tests (ste
 - *Backpressure.* `drain()` waits only when the last write returned false (`writableNeedDrain`); waiting whenever `writableLength > 0` hangs, because Node emits `drain` only after a refused write (kit 0.3.0 change request).
 - *Rendering.* A stored event that no longer renders (schema mismatch) is skipped with an `ALERT` log instead of closing the stream (a close would repeat on every reconnect).
 - *Kit.* Until kit 0.3.0 is published, `src/api/sse.ts` provides `ctx.sse(limits)` (duration, slow reader), `buffered`/`drain()` and `resumeCursor` on kit 0.2.1; it is the only file to change when switching.
+
+## Step 4.2 implementation (spec 0.4.0, v1.11)
+
+- **Mandate ingest (§4).** The ingest stage is 4: the 8 `evt.billing.mandate.*` subjects (`activated`, `collected`, `insufficient_funds`, `canceled`, `exhausted`, `updated`, `unlinked`, `released`) become `mandate.<same>` events whose `data.object` is the public `Mandate` billing published, validated against the spec schema; `sequence` is the mandate's own (merchants discard lower sequences). `evt.rails.vault.event` (raw vault events, billing's input) is never public. No new route or table: mandate events are listed by `GET /v1/events`, filtered by `type=`, subscribable in `enabled_events`, resent and streamed (§5.1) like every other type (`object_type` = the aggregate type `mandate`).
+- **Guards.** The nested-livemode check (INV-8) applies unchanged: a `Mandate` whose `livemode` (sandbox vault stand-in = `false`) differs from the envelope's is dead-lettered (`consumer:webhooks`), never a public event, never delivered to an endpoint of the other mode. A payload that does not parse as `Mandate` is dead-lettered the same way. Mandates carry no secret (payer account and on-chain terms are public chain data), so no extra field guard as for `invoice.hosted_invoice_url`.
+- **Tests.** Unit (mapping, pass-through per mode, guard, Event rendering incl. `previous_attributes` for `mandate.updated`), contract (40 ingested subjects, every type renders as the spec `Event`), integration `test/integration/stage4.test.ts` (signed delivery of all 8 types per subscription and mode, `GET /v1/events?type=`, dead letter on a mode mismatch, SSE tail per `types=` byte-for-byte like `GET /v1/events/{id}`).
