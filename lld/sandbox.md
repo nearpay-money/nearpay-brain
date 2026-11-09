@@ -146,7 +146,7 @@ Rails treats both chains as Tier A (rails §21); test mode must exercise the sam
 | `transfers[].vout` | — | output index (`0`; scenario `09`: `0` and `2`) |
 | `confirmations` | null | `1` when recorded, `+1` per 30 s (× `NP_SANDBOX_TIME_SCALE`), capped at 6; `finalized = confirmations ≥ 1` |
 
-Rows recorded before v1.6 answer the new fields absent (rails treats absent as unknown). Simulated payer addresses stay as §4.1; the solver address on these chains is `solverAddress(chain)` in the formats above.
+Rows recorded before v1.7 answer the new fields absent (rails treats absent as unknown). Simulated payer addresses stay as §4.1; the solver address on these chains is `solverAddress(chain)` in the formats above.
 
 **Scenarios added:**
 - `08` — slow finality: the destination (payout or refund) tx is recorded with `finalized: false` for 60 s (Bitcoin: `confirmations: 0`, then the normal growth), then final. Rails retries (§8.8) and must not emit evidence early; with a settlement ≥ USD 1,000 on Bitcoin it needs the second confirmation 30 s later.
