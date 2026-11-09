@@ -160,7 +160,7 @@ API: `const np = NearPay('pk_live_…', {payOrigin?}); const checkout = np.mount
 
 ## 7. Accessibility, i18n, performance
 
-WCAG 2.2 AA; English in v1 with a flat message catalog using `{var}` placeholders (no ICU plural rules needed yet); initial JS ≤ 180 KB gzipped (143 KB at step 1.3, 167.9 KB at step 2.3 with the design system, 172.1 KB at step 3.3 with spec/ui 0.3.0, 176.1 KB at step 4.3 with the Solana path; wallet SDKs lazy-loaded on "Pay with wallet", NEAR Connect 14 KB, Wallet Standard discovery 1.6 KB; the hosted invoice page is a lazy chunk loaded only on `/i/` — 12.4 KB at step 3.3, 20.7 KB at step 4.3 with auto-pay, its copy registered from the chunk). Placeholder contract code (spec gaps before a release) must not pull schema modules into the initial bundle: step 4.3 keeps pure chain helpers apart from billing schemas; first paint < 1.5 s on 4G.
+WCAG 2.2 AA; English in v1 with a flat message catalog using `{var}` placeholders (no ICU plural rules needed yet); initial JS ≤ 180 KB gzipped (143 KB at step 1.3, 167.9 KB at step 2.3 with the design system, 172.1 KB at step 3.3 with spec/ui 0.3.0, 176.1 KB at step 4.3 with the Solana path, 178.6 KB after adopting the published spec 0.4.0; wallet SDKs lazy-loaded on "Pay with wallet", NEAR Connect 14 KB, Wallet Standard discovery 1.6 KB; the hosted invoice page is a lazy chunk loaded only on `/i/` — 12.4 KB at step 3.3, 20.7 KB at step 4.3 with auto-pay, 30.8 KB on spec 0.4.0 (mandate and vault schemas), its copy registered from the chunk). Placeholder contract code (spec gaps before a release) must not pull schema modules into the initial bundle: step 4.3 keeps pure chain helpers apart from billing schemas; first paint < 1.5 s on 4G.
 
 ## 8. Tests
 
