@@ -1,6 +1,6 @@
 # Domain Model, State Machines and Payment Outcomes
 
-> Version 1.5 (step 3.1, spec 0.3.0: `txr_`, `il_`, `si_` prefixes; billing state machines §4.5) · Version 1.4 (step 2.1, spec 0.2.0: `inv_`, `aud_`, `opa_`, `bl_`, `rcn_` prefixes; refund edges `canceled|failed → succeeded` §4.4; reconciliation runs §6) · Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
+> Version 1.6 (step 4.1, spec 0.4.0: Mandate states and link status §4.5) · Version 1.5 (step 3.1, spec 0.3.0: `txr_`, `il_`, `si_` prefixes; billing state machines §4.5) · Version 1.4 (step 2.1, spec 0.2.0: `inv_`, `aud_`, `opa_`, `bl_`, `rcn_` prefixes; refund edges `canceled|failed → succeeded` §4.4; reconciliation runs §6) · Version 1.3 (step 1.4: `whd_` prefix, spec 0.1.5) · Version 1.2 (step 1.2: `pol_` and `ks_` prefixes, late settlement of expired executions, sessions wait on review) · Version 1.1 ID prefixes completed in step 1.1 (`nearpay-spec` `ID_PREFIXES` is the machine-readable list) · Owners per aggregate are binding (see HLD §5.1). Public field names follow `architecture/api-conventions.md`.
 
 ## 1. Identifiers
 
@@ -293,17 +293,19 @@ stateDiagram-v2
     unpaid --> canceled: canceled
   }
   state Mandate {
-    [*] --> pending_funding
-    pending_funding --> active: vault event mandate_created
+    [*] --> active: vault event mandate_created (balance ≥ amount_per_period)
+    [*] --> insufficient: mandate_created with less than one period
     active --> active: collected
-    active --> insufficient: collect failed for balance
+    active --> insufficient: balance below one period (collected, or collect failed for balance)
     insufficient --> active: topped up
     active --> exhausted: max_periods reached
-    active --> canceled: payer or merchant cancels
+    insufficient --> exhausted: max_periods reached
+    active --> canceled: payer or merchant receiver cancels
+    insufficient --> canceled: payer or merchant receiver cancels
   }
 ```
 
-Billing objects in v1 (step 3.1): invoices are collected with `send_invoice` only; `paid` and `void` are final — money that still settles for them (INV-3) is listed on the invoice and refunded by the merchant, never applied. Exact rules: `lld/billing.md` §4, §11.
+Mandates (step 4.1, `lld/billing.md` §14): a mandate exists only from the vault's `mandate_created` event (`pending_funding` is never written); every transition follows a forwarded vault event (INV-2). Orthogonal to the status: `link_status` `linked | unlinked` (set once at creation by the §6 linkage rule) and `collecting` (true while linked, on-chain active and the subscription is active and `auto_debit`; turns false for good on release). Billing objects in v1 (step 3.1): invoices are collected with `send_invoice` (Stage 4 adds `auto_debit` for subscription invoices, falling back to `send_invoice`; billing §14 d6); `paid` and `void` are final — money that still settles for them (INV-3) is listed on the invoice and refunded by the merchant, never applied. Exact rules: `lld/billing.md` §4, §11.
 
 ### 4.6 SettlementDestination
 

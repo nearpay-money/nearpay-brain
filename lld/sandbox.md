@@ -1,14 +1,14 @@
 # LLD — `nearpay-sandbox`
 
-> Version 1.5 (step 3.2b, spec 0.3.1: `SimTx.transfers[].from` §3, documented test addresses of the simulated payer and liquidity provider §4.1) · Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
+> Version 1.7 (step 4.1, spec 0.4.0: Solana and Bitcoin simulation — address and hash formats, `SimTx` chain fields, confirmations, scenarios `08`/`09`, Solana USDT — §10) · Version 1.6 (step 4.1, spec 0.4.0: subscription-vault stand-in §3.1, vault scenarios §4.2, data §5, configuration §6, Stage 4 §8; OQ-T-03 resolved) · Version 1.5 (step 3.2b, spec 0.3.1: `SimTx.transfers[].from` §3, documented test addresses of the simulated payer and liquidity provider §4.1) · Version 1.4 (step 2.2 implementation: live 1Click shape details §3, Intents deposits by Verifier transfer §3, `/sim/intents/transfers` events §3, Explorer mirror rules §3, scenario `06` for refund legs §4, data §5, fixed prices and test-mode funds §8) · Version 1.3 (step 2.1, spec 0.2.0: refund legs — `scenario_group`/`scenario_kind` §3–§4, `POST /sim/intents/transfers` §3, Stage 2 §8; Explorer mirror and live 1Click shape §3) · Version 1.2 (step 1.2 implementation findings folded: quote signature, appFees split and scenario key §3, Verifier events §3, scenario 06 §4, configuration §6, ops CLI §9) · Version 1.1 audited (`audits/sandbox.md`) · ADR-0007 · API conventions §8 · Foundations `00-foundations.md`
 
 ## 1. Scope
 
-Deterministic simulator for test mode, local development and E2E: a **1Click-compatible API**, simulated chains (evidence lookups), and a simulated Verifier (`intents.near`) for signed transfers. Rejects every `livemode=true` call.
+Deterministic simulator for test mode, local development and E2E: a **1Click-compatible API**, simulated chains (evidence lookups), a simulated Verifier (`intents.near`) for signed transfers, and (Stage 4) a **subscription-vault stand-in** served over a NEAR JSON-RPC subset (§3.1). Rejects every `livemode=true` call.
 
 ## 2. Runtime
 
-`sandbox-api` (1 replica, own DB `sandbox`). Exposed only on the `internal` network; every call requires a service token with `sandbox.use` (payments, rails, agentpay, sentinel); test helpers reach it through payments.
+`sandbox-api` (1 replica, own DB `sandbox`). Exposed only on the `internal` network; every call requires a service token with `sandbox.use` (payments, rails, agentpay, sentinel; billing from Stage 4 for the keeper's test-mode RPC and the mandate test helpers); test helpers reach it through payments (and billing for mandates).
 
 ## 3. Endpoints
 
@@ -34,6 +34,22 @@ Deterministic simulator for test mode, local development and E2E: a **1Click-com
 
 **Live 1Click shape (spec 0.2.0):** the `OneClick*` schemas accept `null` for unset optional fields and a status-nested `quoteResponse` without `correlationId` (`OneClickStatusQuoteResponse`). The sandbox serves the live shape: unset optionals as `null` (e.g. `swapDetails.amountOut` before settlement, `appFees[].limitOrderId`), and `GET /v0/status` nests the quote response without `correlationId` and its `quoteRequest` without `quoteWaitingTimeMs`, so adapters are tested against what mainnet sends (`roadmap/open-questions.md`, mainnet findings). Details as implemented (v1.4), parity-tested key by key against the recorded mainnet `PENDING_DEPOSIT` status body (spec fixture `oneclick-status-pending-live.json`): `swapDetails` always carries `depositedAmount*`, `amountIn*`, `amountOut*`, `slippage`, `refundReason` (`null` while unset), `refundedAmount*` (`"0"` until a refund), `refundFee` and `withdrawFee` (the quote's), and no `referral`; the request echo (quote and status) adds `virtualChainRecipient: null`, `virtualChainRefundRecipient: null` and `confidentiality: "public"` when unset, as live 1Click does — none of these change the signature (the SDK hashes nulls as unset and does not sign `confidentiality`). `scenario_amount`, `scenario_group` and `scenario_kind` are never echoed. `/v0/tokens` is unchanged (no recorded live body; native tokens keep omitting `contractAddress`).
 
+### 3.1 Subscription-vault stand-in (Stage 4, OQ-T-03, spec 0.4.0)
+
+Test mode exercises auto-debit end to end without a NEAR sandbox node: the sandbox plays one vault account (`NP_SANDBOX_VAULT_ACCOUNT`, default `vault.sandbox.near` = billing's test-mode `NP_VAULT_CONTRACT`) that billing's keeper and rails' indexer reach through their normal code paths. Rules, check orders, caps, periods, refunds, storage and views are those of `contracts-vault.md` v1.6 §3.1–§3.8; event lines, error strings and view JSON are byte-identical (spec `formatVaultEventLog`, `VAULT_ERRORS`, view schemas; contract-tested against `test-vectors/vault.json`, the same file the vault's unit tests assert).
+
+| Endpoint | Mirrors | Behaviour |
+|---|---|---|
+| `POST /sim/near-rpc` (`sandboxNearRpc`) | NEAR JSON-RPC | The subset in spec `NearRpcRequest`: `block` (finality), `query` `call_function` (vault views `get_mandate`, `get_mandates_by_payer`, `next_collect_at`, `get_config`, `get_token_tvl`, `storage_balance_of`, `storage_balance_bounds`; NEP-141 `ft_balance_of`/`storage_balance_of` of the test tokens) and `view_access_key`, `send_tx` / `broadcast_tx_commit`, `tx`. Signed transactions: borsh `SignedTransaction` decoded, ed25519 signature over sha256(transaction) verified, nonce > the key's last (keys register on first use, like the simulated Verifier; nothing checks the block hash), `receiver_id` = the vault, one `FunctionCall` among `collect`, `cancel`, `withdraw`, `storage_deposit`, `storage_withdraw`, `storage_unregister`; its gas and deposit feed the vault's `ERR_GAS` / 1-yocto checks. Executed synchronously; every `wait_until` gets the final outcome. Failure = `status.Failure.ActionError.kind.FunctionCallError.ExecutionError = "Smart contract panicked: ERR_…"` (spec `nearPanicStatus`); success = the receipt chain (token receipts with NEP-141 `ft_transfer` logs, Verifier `mt_mint` for an Intents merchant leg, vault receipts with the exact `EVENT_JSON` lines) and `status.SuccessValue` = base64 of the return value (`collect`: `true`/`false`). Unknown methods → `METHOD_NOT_FOUND`; malformed or badly signed transactions → `INVALID_TRANSACTION` (HTTP 200, like NEAR RPC) |
+| `POST /sim/vault/ft_transfer_call` (`sandboxVaultFtTransferCall`) | the payer's wallet | `{payer, token, amount, msg}` without a signature: mints the payer's shortfall of the test token, then the token's `ft_transfer_call` → vault `ft_on_transfer` (§3.1 check order; a rejection logs `ERR_…[: detail]` and returns the full amount) → the token's resolve (refund). Payer `intents.near` or the vault → `ERR_UNSUPPORTED_SENDER` (the stand-in treats `payer` as both signer and sender, so relayed deposits are tested by those two accounts). Returns the `NearFinalExecutionOutcome` |
+| `POST /sim/vault/call` (`sandboxVaultCall`) | — | `{signer, method, args, gas?, deposit?}`: the same execution as a signed `send_tx`, unsigned (simulated payer cancel/withdraw, storage). Defaults: 100 Tgas (`collect` 250 Tgas), 1 yoctoNEAR for `cancel`/`withdraw`/`storage_withdraw`/`storage_unregister` |
+| `POST /sim/vault/advance` (`sandboxVaultAdvance`) | — | `{mandate_id, secs?}`: per-mandate forward-only clock offset (like billing's per-subscription test clock, billing §13) used for that mandate's due checks and `next_collect_at` (creation and its `start_at` clamp use real time); `secs` omitted = up to `next_collect_at`. Block timestamps in outcomes stay real; other mandates are unaffected, so parallel E2E runs do not interfere. Never lowers the 86 400 s minimum period. Returns `SimVaultClock` |
+
+- **Indexer feed.** Every receipt outcome with logs is appended to `GET /sim/intents/events` with the new optional fields `receipt_id`, `log_index`, `executor_id` (the stand-in account for vault receipts; absent = `intents.near`), `block_hash`, `block_timestamp`, `receipt_status` (`success`; failed receipts are never appended, because the vault panics before logging). Rails' sandbox indexer adapter applies the §8.6 forwarding rules to these fields unchanged and emits `evt.rails.vault.event` with `livemode: false`.
+- **Merchant leg.** `intents_account` receivers are credited in the simulated Intents ledger (`sim_intents_balances`, the same ledger `/sim/intents/*` uses) with a Verifier `mt_mint` log, so "merchant receives into its Intents account" is checkable; `near_account` receivers and the treasury (`NP_SANDBOX_VAULT_FEE_RECEIVER`, default `treasury.sandbox.near`) are credited in the simulated NEP-141 ledger. Refunds credit the payer's NEP-141 balance.
+- **Configuration of the stand-in** (constructor equivalents, fixed at boot): allowed tokens = the registry's NEAR USDC and USDT contracts (`17208628…a1`, `usdt.tether-token.near`), `max_fee_bps` 500, `intents_account = intents.near`, caps `NP_SANDBOX_VAULT_CAPS` (default per token: `cap` 10^15, `mandate_cap` 10^12 base units).
+- **Not modelled:** gas accounting beyond the floors (a call with enough gas never runs out), NEAR balances (storage deposits are recorded, NEAR itself is unlimited), meta-transactions, failed receipts with phantom logs (rails' rule for them is unit-tested in rails with recorded shapes instead).
+
 ## 4. Scenario engine
 
 Scenario key = last two digits of `scenario_amount` (the fiat amount in minor units, or the asset amount in base units for asset-priced intents). The outcome also follows the deposit amount like 1Click `EXACT_OUTPUT`: below `minAmountIn` → refunded, above `amountIn` → excess refunded, after the deadline → refunded.
@@ -48,6 +64,8 @@ Scenario key = last two digits of `scenario_amount` (the fiat amount in minor un
 | `05` | `SUCCESS` but `/sim/chains` returns amount − 1 (short) |
 | `06` | like `00`; a deposit also pays the older open quotes of the same payment (duplicate settlement → overpayment). Stage 2: quotes are grouped by `scenario_group` when present; on refund legs a deposit to one leg also settles the other open legs of the same refund (duplicate refund → payments records a `duplicate` leg). Without `scenario_group` the Stage 1 grouping applies. As implemented (v1.4): group key = `sha256("group|" + kind + "|" + scenario_group)`, else the Stage 1 `sha256(recipient|destinationAsset|refundTo|scenario_amount)`; a payment deposit pays **older** open attempts only (Stage 1), a refund deposit pays **every other** open leg, older or newer; a refund leg's duplicate deposit counts as made **in time**, so an expired leg (deadline passed, still `PENDING_DEPOSIT`) settles `SUCCESS` — the "paid the expired leg and its replacement" case payments must see — while an expired payment attempt is still refunded (`DEPOSIT_AFTER_DEADLINE`, Stage 1). Every scenario applies to refund legs by the refund amount's last two digits (e.g. `02` underpays the leg → the merchant is refunded at the deadline) |
 | `07` | success arrives 5 min after the session's `expires_at` |
+| `08` (Stage 4) | slow finality: the destination tx is recorded not final for 60 s (§10) |
+| `09` (Stage 4) | Solana: a failed destination tx precedes the real one; Bitcoin: the payout is split over two outputs (§10) |
 | refund address contains `sanctioned` | compliance blocks (handled by compliance sandbox rule) |
 
 ### 4.1 Test addresses and transfer senders (v1.5)
@@ -73,21 +91,37 @@ Sender (`from`) of each simulated transfer recorded in `sim_txs`:
 
 On mainnet a 1Click delivery's sender is likewise the delivering solver, never the payer's origin wallet (rails §20.1).
 
+### 4.2 Vault stand-in scenarios (Stage 4, v1.6)
+
+Chosen per mandate by the last two digits of `amount_per_period` (spec `vaultSandboxScenarioOf`), like the 1Click engine; amounts are token base units, so a merchant picks a scenario with the price (e.g. USD 10.91 → `10910000`):
+
+| Suffix | Outcome |
+|---|---|
+| `00` or unlisted | every leg succeeds (`collected` with the full share and fee; refunds succeed) |
+| `91` | every merchant leg fails → `collect_failed {reason: "merchant_transfer_failed"}`, period not counted, amount credited back (keeper §7.1: retry, fallback after 5) |
+| `92` | every fee leg fails → `collected` with `fee: "0"`, the fee stays in `balance` (keeper: paid + ops alert) |
+| `93` | the **first** refund of the mandate fails → `canceled {refunded: "0"}` (balance restored); a later `withdraw` succeeds (`withdrawn`) |
+| `94` | partial merchant delivery: the merchant leg uses `floor(share / 2)` (spec `vaultSandboxPartialShare`; 0 → nothing delivered, i.e. `collect_failed`) → `collected` with the short `merchant_share`, `fee: "0"`, the rest stays in `balance` (keeper: short-share path) |
+
+`ERR_*` paths need no scenario: they follow from the inputs (too little gas, not due, insufficient balance, wrong caller, caps).
+
 ## 5. Data
 
-`sim_quotes(deposit_key pk, request jsonb, response jsonb, scenario text, state text, timeline jsonb, created_at)` (+ Stage 2, migration `0002`: `scenario_group text` null, `scenario_kind text` `payment`|`refund` default `payment`; indexes on `deposit_address` (Intents deposits) and `(request->>'referral', seq)` (Explorer mirror)), `sim_txs(hash pk, chain, transfers jsonb, finalized_at)`, `sim_intents_balances(account_id, token, amount numeric(78,0), primary key(account_id, token))`, `sim_intents_events(seq bigserial pk, payload jsonb)`.
+`sim_quotes(deposit_key pk, request jsonb, response jsonb, scenario text, state text, timeline jsonb, created_at)` (+ Stage 2, migration `0002`: `scenario_group text` null, `scenario_kind text` `payment`|`refund` default `payment`; indexes on `deposit_address` (Intents deposits) and `(request->>'referral', seq)` (Explorer mirror)), `sim_txs(hash pk, chain, transfers jsonb, finalized_at)`, `sim_intents_balances(account_id, token, amount numeric(78,0), primary key(account_id, token))`, `sim_intents_events(seq bigserial pk, payload jsonb)`. Stage 4 (migration `0003`): `sim_vault_mandates(mandate_id bigint pk, state jsonb, clock_offset_s bigint not null default 0, refunds_failed smallint not null default 0)` (the contract's `Mandate` incl. `in_flight`/`refund_in_flight`), `sim_vault_state(singleton: next_id, tvl jsonb)`, `sim_vault_storage(account_id pk, total numeric(78,0), mandates int)`, `sim_ft_balances(token, account_id, amount numeric(78,0), primary key(token, account_id))`, `sim_access_keys(account_id, public_key, nonce bigint, primary key(account_id, public_key))`, `sim_near_txs(hash pk, outcome jsonb)` (for `tx`). Vault calls are serialised (one lock, the contract's single-threaded receipt order).
 
 ## 6. Configuration
 
-`NP_SANDBOX_SIGNING_KEY_FILE` (public key distributed to rails/sentinel as `NP_SANDBOX_SIGNING_PUBKEY`), `NP_SANDBOX_TIME_SCALE` (1.0; testbed may set 0.1), `NP_SANDBOX_TICK_MS` (200; how often due timeline steps are applied), `NP_JWKS_URL` (service tokens).
+`NP_SANDBOX_SIGNING_KEY_FILE` (public key distributed to rails/sentinel as `NP_SANDBOX_SIGNING_PUBKEY`), Stage 4: `NP_SANDBOX_VAULT_ACCOUNT` (`vault.sandbox.near`), `NP_SANDBOX_VAULT_FEE_RECEIVER` (`treasury.sandbox.near`), `NP_SANDBOX_VAULT_CAPS` (JSON `[{token, cap, mandate_cap}]`), `NP_SANDBOX_TIME_SCALE` (1.0; testbed may set 0.1), `NP_SANDBOX_TICK_MS` (200; how often due timeline steps are applied), `NP_JWKS_URL` (service tokens).
 
 ## 7. Tests
 
-Schema parity: sandbox request/response validated against the same zod schemas as the 1Click adapter (contract test); each scenario timeline; signature verification by rails/sentinel sandbox verifiers.
+Schema parity: sandbox request/response validated against the same zod schemas as the 1Click adapter (contract test); each scenario timeline; signature verification by rails/sentinel sandbox verifiers. Stage 4: every vault event line, error string and view result asserted against `test-vectors/vault.json`; each §3.1 check order and each §4.2 scenario; JSON-RPC responses validated with the spec's `NearRpcResponse`; a keeper-shaped client (near-api-js signing) runs `collect` → `collected` against `/sim/near-rpc`.
 
 ## 8. Stage mapping
 
 Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (Stage 2). Stage 2 (implemented in step 2.2): `scenario_group` / `scenario_kind` on quotes, `06` for refund legs, `POST /sim/intents/transfers`; refund legs quote `EXACT_INPUT` (amountOut = `floor(amountIn × price ratio × (1 − 20 bps))`) and `EXACT_OUTPUT` like payments, with no app fee; the payer side of a refund settles on `/sim/chains` (route legs) or the simulated Verifier (Intents legs) so rails verifies payer-side evidence; the Explorer mirror (`GET /api/v0/transactions`) and the live 1Click body shape.
+
+Stage 4 (step 4.2): the subscription-vault stand-in §3.1 with the §4.2 scenarios (OQ-T-03).
 
 **Fixed prices for rails test mode (v1.4, rails §8.2).** Rails reads its test-mode primary *and* secondary token prices from sandbox `GET /v0/tokens` (`price` + `priceUpdatedAt` = now, so always fresh): USDC/USDT 1, ETH 2500, wNEAR 4, SOL 150, BTC 80000 USD (`src/domain/tokens.ts`), the same prices every quote uses. Fiat FX is rails' own fixed table `NP_TEST_FX_RATES` — the sandbox serves no FX. The registry has no EUR stablecoin, so test mode cannot exercise EUR par settlement (`NP_STABLE_PEGS`); EUR-priced test payments settle non-par in USD stablecoins. Adding one needs its real NEAR Intents asset id from live `/v0/tokens` (not reachable from the build container).
 
@@ -96,3 +130,29 @@ Stage 1: all of the above except scenario `06` duplicate behaviour for refunds (
 ## 9. Ops CLI
 
 `docker compose exec sandbox-api /nodejs/bin/node dist/ops.js <command>`: `intents-fund <account> <token> <amount>` credits a simulated Intents balance (the same `mt_mint` as `POST /sim/intents/fund`; `seed.sh data` funds the demo agent with it, platform §3) · `intents-balance <account> <token>`. Test mode only by construction (the sandbox holds no live data); arguments are validated before the ledger is touched. Missing: a tx-status route, so agentpay cannot recover a sandbox execute that failed in transport (agentpay §7).
+
+## 10. Stage 4 — Solana and Bitcoin simulation (step 4.1, spec 0.4.0)
+
+Rails treats both chains as Tier A (rails §21); test mode must exercise the same verifier rules, so the simulated chains carry the chain-specific fields of `SimTx` (spec 0.4.0). Existing scenarios `00`–`07` apply unchanged to Solana/Bitcoin deposits (payer side), payouts (destination side) and refunds (refund address side).
+
+**Formats** (as already implemented in `src/simulated-chains/addresses.ts`, `s = seedBytes(seed)`; recorded here as the contract):
+
+| | Solana | Bitcoin |
+|---|---|---|
+| deposit address | `base58(s)` (32 bytes) | P2WPKH `bc1q…` with program `s[0..20]` |
+| tx hash | `base58(seedBytes("tx:"+seed) ‖ seedBytes("tx2:"+seed))` (64 bytes, a signature) | `hex(seedBytes("tx:"+seed))` (txid) |
+| `SimTx.block_ref` | slot `380000000 + seq` | height `900000 + seq` |
+| `transfers[].token_account` | ATA(`to`, mint) for SPL (kit `chains`); null for SOL | — |
+| `transfers[].vout` | — | output index (`0`; scenario `09`: `0` and `2`) |
+| `confirmations` | null | `1` when recorded, `+1` per 30 s (× `NP_SANDBOX_TIME_SCALE`), capped at 6; `finalized = confirmations ≥ 1` |
+
+Rows recorded before v1.6 answer the new fields absent (rails treats absent as unknown). Simulated payer addresses stay as §4.1; the solver address on these chains is `solverAddress(chain)` in the formats above.
+
+**Scenarios added:**
+- `08` — slow finality: the destination (payout or refund) tx is recorded with `finalized: false` for 60 s (Bitcoin: `confirmations: 0`, then the normal growth), then final. Rails retries (§8.8) and must not emit evidence early; with a settlement ≥ USD 1,000 on Bitcoin it needs the second confirmation 30 s later.
+- `09` — Solana: `destinationChainTxHashes` lists two signatures; the first is recorded `failed: true` with no transfers, the second carries the payout (rails must skip the failed one). Bitcoin: the payout tx pays the destination in two outputs (`vout` 0 and 2; amounts `floor(a/2)` and the rest) plus a solver change output `vout` 1 (rails must sum). Other chains: like `00`.
+
+**Registry:** add Solana USDT (`nep141:sol-c800a4bd850783ccb82c2b2c7e84175443606352.omft.near`, 6 decimals, `contractAddress` `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB`, price 1) next to Solana USDC, SOL and BTC; every `sol-` entry must satisfy the SPL id rule (rails §21.1, a unit test against `chains-solana-bitcoin.json`).
+
+**Scenario suffixes in use:** `00`–`09` (payments/refunds), `91`–`94` (vault stand-in, OQ-T-03).
+
