@@ -11,7 +11,7 @@ An LLD is **dev-ready** when an engineer (human or AI agent) can implement the c
 | [00-foundations.md](00-foundations.md) | Cross-cutting: `nearpay-spec`, `nearpay-kit`, conventions every service follows | [audit](audits/00-foundations.md) | dev-ready (v1.7 + step 3.1 and spec 0.4.0 updates) |
 | [identity.md](identity.md) | `nearpay-identity` | [audit](audits/identity.md) | dev-ready (v1.12: Solana and BIP-322 ownership attestations — spec 0.4.0) |
 | [payments.md](payments.md) | `nearpay-payments` | [audit](audits/payments.md) | dev-ready (v1.12) |
-| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | dev-ready (v1.12: Solana and Bitcoin Tier A, vault event forwarding, `VaultEventRecord` — spec 0.4.0) |
+| [rails.md](rails.md) | `nearpay-rails` | [audit](audits/rails.md) | dev-ready (v1.15: step 4.2 as built — tier pinning and pool health, Solana/Bitcoin deposit signals, sender rule, vault forwarding storage and outbox (§21.6); Solana and Bitcoin Tier A, vault event forwarding, `VaultEventRecord` — spec 0.4.0) |
 | [sentinel.md](sentinel.md) | `nearpay-sentinel` | [audit](audits/sentinel.md) | dev-ready (v1.10: Solana and Bitcoin coverage — spec 0.4.0) |
 | [agentpay.md](agentpay.md) | `nearpay-agentpay` | [audit](audits/agentpay.md) | dev-ready (v1.9) |
 | [compliance.md](compliance.md) | `nearpay-compliance` | [audit](audits/compliance.md) | dev-ready (v1.7 + spec 0.2.1 update) |
