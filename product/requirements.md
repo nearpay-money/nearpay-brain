@@ -24,7 +24,7 @@
 - **FR-ACC-02** MUST authenticate dashboard users with passkeys (WebAuthn); email magic-link MAY be used for recovery only; TOTP as backup factor.
 - **FR-ACC-03** MUST issue API keys per mode: secret (`sk_live_`/`sk_test_`), publishable (`pk_…`), restricted (`rk_…` with scopes). Secrets shown once, stored hashed.
 - **FR-ACC-04** Sensitive actions (settlement destination changes, key creation, team/role changes) MUST require step-up auth; destination changes MUST require two approvers when the account has ≥ 2 admins.
-- **FR-ACC-05** Live mode MUST be gated on KYB status `approved` and at least one `active` settlement destination.
+- **FR-ACC-05** Live mode MUST be gated on KYB status `approved` and at least one `active` settlement destination. **Open onboarding (ADR-0024):** `approved` is the system's automatic decision on a complete submission (no NearPay approval step; `NP_KYB_MODE=auto`, default), so live mode is available as soon as the details are saved and a live destination is active.
 
 ### 2.2 Settlement destinations
 - **FR-SET-01** A destination is `{asset_id, type: chain_address | intents_account, chain, address}` for **any** supported asset.
@@ -71,7 +71,7 @@
 - **FR-WH-04** Webhook egress MUST go through an SSRF-safe egress proxy from published static IPs.
 
 ### 2.8 Compliance (`compliance`)
-- **FR-CMP-01** KYB through a vendor before live mode; periodic refresh by risk tier. **v1 (ADR-0020):** no KYB vendor — the merchant self-declares minimum business details and an ops decision in the console approves them before live mode; vendor KYB and risk-tier refresh return when Q-VEN-01 is reopened.
+- **FR-CMP-01** KYB through a vendor before live mode; periodic refresh by risk tier. **v1 (ADR-0020):** no KYB vendor — the merchant self-declares minimum business details and an ops decision in the console approves them before live mode; vendor KYB and risk-tier refresh return when Q-VEN-01 is reopened. **Amended by ADR-0024 (open onboarding, owner decision 2026-11-10):** no ops decision is required — a complete submission is approved automatically (actor `system`) unless the geo policy blocks the business country/region (automatic `rejected`, `geo_blocked`); `registration_number` and `website` are optional; payout-address sanctions screening, the geo policy, suspension and a manual reject for abuse stay; `NP_KYB_MODE=manual` restores the ops review without a code change.
 - **FR-CMP-02** Screen every settlement destination (on add + daily), every payer origin/refund address (pre-quote) and actual sender addresses (post-deposit). **v1 (ADR-0020):** the screening source is the local OFAC list + blocklist behind a vendor-neutral interface (Q-VEN-02 deferred).
 - **FR-CMP-03** Geo-policy (IP country, configurable lists) on checkout; jurisdiction is undecided, so policy is data, not code.
 - **FR-CMP-04** Case management for hits; actions: block address, suspend merchant, report.
