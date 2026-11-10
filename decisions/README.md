@@ -23,7 +23,7 @@
 | [0019](ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites | Accepted |
 | [0020](ADR-0020-v1-delivery-and-vendor-scope.md) | v1 by 2026-11-14: test-mode stage gates + one mainnet demo, self-declared KYB, local screening, keyless FX/prices, AI vault audits, merges delegated to the lead agent | Accepted (decision 3 amended by 0024: no ops KYB decision) |
 | [0021](ADR-0021-shared-ui-package.md) | Shared UI package `@nearpay-internal/ui` in nearpay-kit (CSS custom properties + plain classes + thin React components, CSP-safe, self-hosted DM Sans) | Accepted |
-| [0022](ADR-0022-evm-l2-confirmations.md) | EVM L2 payments confirm on L2 block confirmations (Base 10, Arbitrum 40; Ethereum `finalized`), reorg check, post-success `finalized` re-check | Accepted |
+| [0022](ADR-0022-evm-l2-confirmations.md) | Payments confirm on ONE block of their own chain (EVM 1 block incl. Ethereum, Solana `confirmed`, Bitcoin 1 confirmation, NEAR `final`), same-block re-read, post-success re-check at finality (EVM `finalized`, Solana `finalized`, Bitcoin 6 conf) | Accepted; amended by owner 2026-11-10 17:10 |
 | [0024](ADR-0024-open-onboarding.md) | Open onboarding: complete self-declared business details go live at once (automatic KYB decision, geo policy still blocks, registration number optional, suspension / reject for abuse stay, `NP_KYB_MODE=manual` restores the review) | Accepted (amends 0020 decision 3) |
 
 New ADRs copy [ADR-0000-template.md](ADR-0000-template.md). Never edit an accepted ADR's decision — supersede it.
