@@ -228,7 +228,7 @@ Contracts: `parseOmftAssetId`, `SolanaEvidence` / `BitcoinEvidence` (`src/common
 | Chain | Co-sign (deposit chain derivable, R4) | Audit `settlement` own read |
 |---|---|---|
 | `near:mainnet` (incl. Intents) | yes | FINAL tx (§8.1) |
-| `eip155:1`, `eip155:8453`, `eip155:42161` | yes | receipt ≤ `finalized` (§8.1) |
+| `eip155:1`, `eip155:8453`, `eip155:42161` | yes | receipt ≤ `finalized` (§8.1; stays `finalized` for Base/Arbitrum too — ADR-0022: rails confirms L2 payments on L2 blocks, sentinel's post-settlement audit never gated success or delivery and is a second, independent L1-finality check of them) |
 | `solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp` (Stage 4) | yes | finalized tx, token-balance delta |
 | `bip122:000000000019d6689c085ae165831e93` (Stage 4) | yes | outputs + confirmations per tier |
 | any other chain | origin derivable from the omft prefix | Tier B (signed 1Click status, §8.1) |

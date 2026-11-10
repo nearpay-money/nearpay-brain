@@ -13,7 +13,7 @@
 | [0009](ADR-0009-agent-payments-x402.md) | Agent payments via x402 v2 | Accepted |
 | [0010](ADR-0010-checkout-isolation.md) | Checkout as isolated static SPA; widget = iframe | Accepted |
 | [0011](ADR-0011-netcup-k3s-two-site.md) | netcup root servers, k3s, NUE/VIE/AMS | Accepted (post-v1 target; v1 → 0015) |
-| [0012](ADR-0012-independent-verification.md) | Evidence before success | Accepted |
+| [0012](ADR-0012-independent-verification.md) | Evidence before success | Accepted (EVM L2 finality amended by 0022) |
 | [0013](ADR-0013-typescript-rust.md) | TypeScript services/frontends, Rust contracts | Accepted |
 | [0014](ADR-0014-auth-gateway.md) | Traefik gateway + ForwardAuth, internal JWTs | Accepted |
 | [0015](ADR-0015-v1-single-host-compose.md) | v1: every service a container in one Compose stack, single host | Accepted |
@@ -23,5 +23,6 @@
 | [0019](ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites | Accepted |
 | [0020](ADR-0020-v1-delivery-and-vendor-scope.md) | v1 by 2026-11-14: test-mode stage gates + one mainnet demo, self-declared KYB, local screening, keyless FX/prices, AI vault audits, merges delegated to the lead agent | Accepted |
 | [0021](ADR-0021-shared-ui-package.md) | Shared UI package `@nearpay-internal/ui` in nearpay-kit (CSS custom properties + plain classes + thin React components, CSP-safe, self-hosted DM Sans) | Accepted |
+| [0022](ADR-0022-evm-l2-confirmations.md) | EVM L2 payments confirm on L2 block confirmations (Base 10, Arbitrum 40; Ethereum `finalized`), reorg check, post-success `finalized` re-check | Accepted |
 
 New ADRs copy [ADR-0000-template.md](ADR-0000-template.md). Never edit an accepted ADR's decision — supersede it.
