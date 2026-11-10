@@ -96,6 +96,7 @@ flowchart LR
 | [0017](../decisions/ADR-0017-git-workflow.md) | Git workflow: `main` + feature branches merged by pull request |
 | [0018](../decisions/ADR-0018-list-filters-not-search.md) | Typed filters on list endpoints instead of search endpoints |
 | [0019](../decisions/ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites |
+| [0024](../decisions/ADR-0024-open-onboarding.md) | **Open onboarding (owner, 2026-11-10):** complete self-declared business details go live at once — automatic KYB decision (actor `system`), geo policy still blocks; registration number optional; suspension and reject-for-abuse stay; `NP_KYB_MODE=manual` restores the review |
 | [0020](../decisions/ADR-0020-v1-delivery-and-vendor-scope.md) | **v1 by 2026-11-14:** stages exit on green test-mode E2E, one v1 mainnet demo; self-declared KYB + ops decision (no KYB vendor); local OFAC screening behind a vendor-neutral interface; ECB FX + keyless public crypto price feed; AI-agent vault audits (mainnet deploy human-signed); merges, incl. money paths, delegated to the lead agent |
 | [0021](../decisions/ADR-0021-shared-ui-package.md) | `@nearpay-internal/ui` (design system) is a versioned nearpay-kit package consumed by checkout, dashboard, console and site; CSS custom properties + plain CSS classes + thin React components, no runtime CSS-in-JS, CSP-safe, self-hosted DM Sans |
 | [0022](../decisions/ADR-0022-evm-l2-confirmations.md) | EVM L2 payments (Base 10, Arbitrum 40 blocks) confirm on L2 block confirmations with a same-block-hash reorg check; Ethereum keeps `finalized`; every confirmed payment is re-checked at L1 finality (alert, never reversed) |
@@ -194,7 +195,7 @@ The core question for a non-custodial design is *"who can move which funds?"*. T
 **Residual power:** NearPay chooses the quote `recipient` at quote time. A compromised `payments`/`rails` tier could quote to an attacker address. Defence in depth:
 1. The destination snapshot originates only in `identity` (separate DB, role and CODEOWNERS); `rails` asserts `quote.recipient == snapshot`.
 2. **Two-party release of deposit instructions:** the checkout SPA renders a deposit address only together with a **co-signature from `nearpay-sentinel`** (Ed25519 key pinned in the SPA build). Sentinel signs only after it independently (own code, own credentials) re-reads the quote from 1Click status by `depositAddress` and confirms `recipient`/`destinationAsset` match an **active destination in identity's registry** (read-only replica role) for that account, and amount/deadline match the attempt. Fail-closed; p99 budget 1.5 s (one provider status call; cached ≤ 50 ms).
-3. The checkout SPA is built and deployed by a separate pipeline (SRI, CSP) and shows the merchant's KYB-approved legal name (self-declared and approved by ops in v1, ADR-0020) and destination fingerprint.
+3. The checkout SPA is built and deployed by a separate pipeline (SRI, CSP) and shows the merchant's KYB-approved legal name (self-declared, ADR-0020; approved automatically on submission, ADR-0024 — shown as "declared by the merchant") and destination fingerprint.
 4. ⚠ Client-side verification of 1Click's own quote `signature` once the scheme is confirmed (SP-01).
 Remaining exposure requires compromising `identity` *and* bypassing its attestation/cool-off/notification controls — see `architecture/security.md` T-03.
 
@@ -288,7 +289,7 @@ flowchart LR
 - **Post-transaction:** sender addresses from observations re-screened; hits open cases, notify merchant, and can suspend new sessions — they cannot claw back funds (non-custodial), so preventive controls carry the weight.
 - **Failure policy (data, per jurisdiction):** default *fail-closed* for live attempts ≥ USD 1,000 equivalent when the screening provider is unavailable; below that, *proceed + mandatory post-screen*.
 - **Screening provider (v1, ADR-0020):** the local OFAC SDN digital-currency list + blocklist behind a vendor-neutral screening interface; a commercial vendor (Q-VEN-02) is a later provider behind the same interface.
-- **KYB (v1, ADR-0020):** the merchant self-declares minimum business details; an ops decision in the console (manual KYB decision endpoint) approves or rejects the `KybCase`; no KYB vendor, hosted flow or vendor webhook. `identity` reads KYB status via events to gate live mode.
+- **KYB (v1, ADR-0020; open onboarding, ADR-0024):** the merchant self-declares minimum business details (registration number optional); with `NP_KYB_MODE=auto` (default) compliance decides the `KybCase` in the submission's transaction — `approved` (actor `system`), or `rejected` when the geo policy blocks the business country/region — so there is no human step; `manual` keeps the ops decision in the console. Operators can still reject for abuse and suspend/reinstate. No KYB vendor, hosted flow or vendor webhook. `identity` reads KYB status via events to gate live mode.
 
 ## 14. Security (summary — `architecture/security.md`)
 
