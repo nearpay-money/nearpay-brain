@@ -1,6 +1,6 @@
 # Open Questions and Spikes
 
-> Version 1.7 (step 4.1: OQ-T-03 resolved — sandbox vault stand-in decided by the lead and specified in `nearpay-spec` 0.4.0, sandbox v1.6 §3.1/§4.2, billing v1.10 §14 d12) · Version 1.6 (step 4.1: proposed resolution for OQ-T-03, not decided) · Version 1.5 (owner decisions 2026-11-07, ADR-0020: Q-VEN-01 superseded, Q-VEN-02 deferred, Q-VEN-05 decided for v1; OQ-T-03 added) · Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
+> Version 1.7 (step 4.1: OQ-T-03 resolved — sandbox vault stand-in decided by the lead and specified in `nearpay-spec` 0.4.0, sandbox v1.6 §3.1/§4.2, billing v1.10 §14 d12) · Version 1.6 (step 4.1: proposed resolution for OQ-T-03, not decided) · Version 1.5 (owner decisions 2026-11-07, ADR-0020: Q-VEN-01 superseded, Q-VEN-02 deferred, Q-VEN-05 decided for v1; OQ-T-03 added) · Version 1.4 (step 1.4: CR-15-01, 02, 03, 05, 08, 09, 11, 12, 13 resolved in `@nearpay-money/spec` 0.1.5) · Version 1.3 (SP-01, SP-14, SP-15 resolved in step 1.2; planned spec 0.1.5 change requests from steps 1.2/1.3) · Version 1.2 OQ-T-01 and OQ-T-02 decided by the owner 2026-11-05 · Every ⚠ in the brain points here. A spike closes with a short write-up appended below its row and, if a decision changes, an ADR.
 
 ## Technical spikes
 
@@ -54,20 +54,20 @@
 - **Parity:** the contract's event lines, error strings and view JSON are exported as fixtures to `nearpay-spec`; the vault's unit tests and the stand-in's contract tests both assert against them.
 - **Alternative:** run the real wasm on a neard sandbox in the testbed Compose (highest fidelity). It needs the sandbox binary in Compose and an indexer block source for the sandbox RPC (neardata/Lake do not exist there), so it is heavier for the v1 date.
 
-## Planned `@nearpay/spec` 0.1.5 (additive) — change requests from steps 1.2 and 1.3
+## Planned `@nearpay-money/spec` 0.1.5 (additive) — change requests from steps 1.2 and 1.3
 
 Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR (additive within 0.1.x) and a consumer bump, or is rejected. Items marked *(kit)*, *(sandbox)* or *(deploy)* are not spec changes and are listed so they are decided in the same pass.
 
 **0.1.5 write-up (step 1.4).** Released and implemented by producers and readers (`nearpay-spec/CHANGELOG.md`): CR-15-01 (identity §6, dashboard §1), CR-15-02 (webhooks §5, `whd_` prefix), CR-15-03 (identity §5–§6), CR-15-05 (payments §6.2, checkout §6), CR-15-08 (webhooks §5), CR-15-09 (payments §6.1, agentpay §5/§7, webhooks §4), CR-15-11 and CR-15-12 (agentpay §3/§6/§7, sdks-and-tools §2), CR-15-13 (foundations §3). Still open: CR-15-04, 06, 07, 10 and 15; CR-15-14, 16 and 17 are not spec changes.
 
-**From the dashboard and `@nearpay/node`**
+**From the dashboard and `@nearpay-money/node`**
 
 | ID | Request | Why |
 |---|---|---|
 | ~~CR-15-01~~ ✔ 0.1.5 | `GET /v1/auth/session` → `DashboardSession` | A reload or new tab cannot recover the CSRF token; the dashboard keeps the session in `sessionStorage` (dashboard §1). Identity can re-issue the CSRF token from `csrf_enc` |
 | ~~CR-15-02~~ ✔ 0.1.5 | `GET /v1/webhook_endpoints/{id}/deliveries` (delivery log) | Endpoint page shows only the test-ping result today; coordinate with webhooks (LLD lists it as Stage 2) |
 | ~~CR-15-03~~ ✔ 0.1.5 | `POST /v1/settlement_destinations/{id}/challenge` | Re-issue an attestation challenge for a destination left in `pending_verification` (today: disable and re-add) |
-| CR-15-04 | Optional: `fingerprint` on the payment intent's destination snapshot; typed `Event.data.object` union | The dashboard computes the fingerprint client-side; `@nearpay/node` derives the event union itself |
+| CR-15-04 | Optional: `fingerprint` on the payment intent's destination snapshot; typed `Event.data.object` union | The dashboard computes the fingerprint client-side; `@nearpay-money/node` derives the event union itself |
 
 **From the checkout and `nearpay-js`**
 
@@ -111,7 +111,7 @@ Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR 
 |---|---|---|
 | **Q-BIZ-01** | Trademark clearance for "NearPay" (name collisions exist) | Keep identifiers domain-derived |
 | **Q-BIZ-02** | Fee schedule by tier/route class (net revenue ≈ half of configured `appFees` on 1Click routes) | 100 bps `volatile`, 50 bps `stable_pair`, 20 bps `same_asset`, 30 bps `intents_transfer` with USD 0.001 minimum (all-in) |
-| **Q-BIZ-03** | npm scope `@nearpay` availability | Fallback `@nearpay-money` |
+| **Q-BIZ-03** | npm scope `@nearpay` availability | **Answered 2026-11-11 (owner):** `@nearpay` belongs to an unrelated company; public packages ship as `@nearpay-money/*` (ADR-0025). Never publish under `@nearpay`. |
 | **Q-BIZ-04** | Default `fee_bearer` (payer vs merchant) | `payer` |
 
 ## Legal and compliance
@@ -142,7 +142,7 @@ Collected from the builders of steps 1.2/1.3 (2026-11-06). Each needs a spec PR 
 
 ## Mainnet findings carried into Stage 2 (2026-11-07)
 
-**Stage 2 step 2.1 note.** The 1Click nullish finding below is being addressed in `@nearpay/spec` in step 2.1 (nullish `OneClick*` fields, status-only quote response with optional `correlationId`); once released, rails and sentinel can drop their pre-validation normalisation and the sandbox serves the live shape.
+**Stage 2 step 2.1 note.** The 1Click nullish finding below is being addressed in `@nearpay-money/spec` in step 2.1 (nullish `OneClick*` fields, status-only quote response with optional `correlationId`); once released, rails and sentinel can drop their pre-validation normalisation and the sandbox serves the live shape.
 
 - **Spec transcription of live 1Click.** Live 1Click sends `null` for unset optional fields and omits the nested `quoteResponse.correlationId` on `GET /v0/status` (reference/landscape.md §2). rails and sentinel normalise bodies before validation (rails #2, sentinel #2); the sandbox cannot mirror these two quirks because the spec schemas reject them. Step 2.1: make those `OneClick*` fields nullish and add a status-only quote response with an optional `correlationId`, then let the sandbox serve the live shape.
 

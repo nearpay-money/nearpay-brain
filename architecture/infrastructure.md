@@ -145,7 +145,7 @@ Pipeline per service repo: lint → typecheck → unit → property tests on sta
 
 ## 7. Observability
 
-- **Instrumentation:** OpenTelemetry SDK in every service (`@nearpay/service` sets it up); trace context propagated through HTTP, NATS headers and outbox rows.
+- **Instrumentation:** OpenTelemetry SDK in every service (`@nearpay-internal/service` sets it up); trace context propagated through HTTP, NATS headers and outbox rows.
 - **Backends (AMS):** VictoriaMetrics, Loki, Tempo, Grafana, Alertmanager. Placed outside NUE/VIE so they observe failures of either. A dead-man's-switch heartbeat to an external SaaS alerts if AMS itself goes dark.
 - **Paging:** Alertmanager → external on-call SaaS (SMS/push), with severity routing.
 - **Synthetic:** checkout journey every minute from 3 regions (external), API probes, mainnet canary payments (funds circulate between NearPay-owned canary wallets; cost = route fees, hard daily cap) every 15 min across: NEAR USDC → Base USDC, Base USDC → NEAR Intents, Solana USDC → Arbitrum USDT, BTC → USDC (hourly, cost-bounded).

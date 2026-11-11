@@ -206,7 +206,7 @@ sequenceDiagram
 sequenceDiagram
   autonumber
   participant A as Agent (x402 client)
-  participant RS as Merchant API + @nearpay/x402
+  participant RS as Merchant API + @nearpay-money/x402
   participant AP as agentpay facilitator
   participant V as intents.near
   A->>RS: GET /resource

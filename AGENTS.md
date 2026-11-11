@@ -14,7 +14,7 @@ You are an AI agent contributing to NearPay. These rules apply in every `nearpay
 - **INV-2 Evidence before success:** never mark a payment/refund succeeded from a provider status alone.
 - **INV-5 Integer money:** bigint base units + explicit asset/currency; no floats, no `Number` for amounts.
 - **INV-8 Livemode:** every query filters by `account_id` and `livemode`; test objects never reach mainnet providers.
-- Contracts come from `@nearpay/spec`. Change the spec first (PR in `nearpay-spec`), then implement.
+- Contracts come from `@nearpay-money/spec`. Change the spec first (PR in `nearpay-spec`), then implement.
 - One transaction per state change: aggregate row + transition row + outbox row.
 
 ## 3. How to change things

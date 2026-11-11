@@ -195,7 +195,7 @@ Non-pass findings emit `evt.sentinel.audit_finding.created`.
 
 ## 13. Tests
 
-- Each check R1–R7 and intents checks with a failing fixture → correct class; signature over JCS matches a vector shared with checkout tests (same fixture file in both repos via `@nearpay/spec` test vectors).
+- Each check R1–R7 and intents checks with a failing fixture → correct class; signature over JCS matches a vector shared with checkout tests (same fixture file in both repos via `@nearpay-money/spec` test vectors).
 - Kill-switch flow end-to-end with rails in testbed.
 - Property: any mutation of a signed attestation fails checkout verification.
 - Property (step 2.2): two-person release over any interleaving of engage/request/approve/reject by any operators and times — never released by one principal, approver an `ops_admin` ≠ requester, both step-ups fresh, inside the hour, for the request's switch version; at most one pending; concurrent requests create one. Attestation field equality (deposit/requirement key by key, `asset` = origin asset with the registry's display data) and a full-precision `amountInFormatted` pinning the decimals.
@@ -251,7 +251,7 @@ Contracts: `parseOmftAssetId`, `SolanaEvidence` / `BitcoinEvidence` (`src/common
 - Readers: Solana JSON-RPC 3 s and Esplora 5 s; a single-URL pool is tried twice (one retry), a longer pool once per URL. Config: `NP_SENTINEL_SOLANA_RPC_URLS_FILE` / `NP_SENTINEL_BITCOIN_ESPLORA_URLS_FILE` (secrets), falling back to `NP_SOLANA_RPC_URLS` / `NP_BITCOIN_ESPLORA_URLS`; no public default.
 - `AuditFinding.details.chain_read`: Solana `{slot, amount}`, Bitcoin `{block_height, amount, confirmations, required_confirmations}`.
 - Test mode: `SimTx.failed` → `mismatch`; on Bitcoin `SimTx.confirmations` must reach the same tier (absent counts 0, so a sandbox without Stage 4 fields leaves Bitcoin test audits unverifiable — fail closed); simulated recipients compare lower-case only for Intents/NEAR accounts, otherwise in the chain's normal form (fixes base58 Solana recipients being lower-cased).
-- Phase B (v1.12, spec 0.4.0): `SOLANA_MAINNET`, `BITCOIN_MAINNET`, `requiredConfirmations` / `BITCOIN_CONFIRMATION_TIERS` from `@nearpay/spec`; the sandbox client returns spec `SimTx` (`failed`, `confirmations`); vectors are read from the installed package. `splAssetHash` stays local until kit 0.4.0 (`splAssetId`) is published; its unit test pins it to the spec vectors.
+- Phase B (v1.12, spec 0.4.0): `SOLANA_MAINNET`, `BITCOIN_MAINNET`, `requiredConfirmations` / `BITCOIN_CONFIRMATION_TIERS` from `@nearpay-money/spec`; the sandbox client returns spec `SimTx` (`failed`, `confirmations`); vectors are read from the installed package. `splAssetHash` stays local until kit 0.4.0 (`splAssetId`) is published; its unit test pins it to the spec vectors.
 - Destination-ownership attestations themselves are not re-verified by sentinel: the registry view exposes `verification`, not the signed attestation (identity §20 verifies it; R5 prefers `signature` rows). Re-verifying them would need the attestation in the view — not in v1.
 
 
