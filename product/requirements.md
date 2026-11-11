@@ -21,7 +21,7 @@
 
 ### 2.1 Accounts and access (`identity`)
 - **FR-ACC-01** MUST support merchant accounts with multiple users and roles: `owner`, `admin`, `developer`, `finance`, `support`, `viewer`.
-- **FR-ACC-02** MUST authenticate dashboard users with passkeys (WebAuthn); email magic-link MAY be used for recovery only; TOTP as backup factor.
+- **FR-ACC-02** MUST authenticate dashboard users with passkeys (WebAuthn); email magic-link MAY be used for recovery only; TOTP as backup factor. **Amended by ADR-0026 (2026-11-11):** Continue with Google (OIDC, keyed on the Google subject) MAY be offered for sign-up and sign-in; it never counts as a step-up — sensitive actions (FR-ACC-04) MUST still be confirmed with a passkey.
 - **FR-ACC-03** MUST issue API keys per mode: secret (`sk_live_`/`sk_test_`), publishable (`pk_…`), restricted (`rk_…` with scopes). Secrets shown once, stored hashed.
 - **FR-ACC-04** Sensitive actions (settlement destination changes, key creation, team/role changes) MUST require step-up auth; destination changes MUST require two approvers when the account has ≥ 2 admins.
 - **FR-ACC-05** Live mode MUST be gated on KYB status `approved` and at least one `active` settlement destination. **Open onboarding (ADR-0024):** `approved` is the system's automatic decision on a complete submission (no NearPay approval step; `NP_KYB_MODE=auto`, default), so live mode is available as soon as the details are saved and a live destination is active.

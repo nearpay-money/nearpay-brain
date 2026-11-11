@@ -1,6 +1,6 @@
 # LLD — Platform (`nearpay-deploy`, `nearpay-infra`, `nearpay-testbed`, `nearpay` entry)
 
-> Version 1.7 (beta prep: §1.4 public beta on the Mac behind Cloudflare Tunnel) · Version 1.6 (step 2.4 integration: Stage 2 Compose wiring and findings §1.4, Stage 2 E2E §3) · Version 1.5 (step 2.1: console `/ops/*` routing and unused `/webhooks/kyb` route in §1, ADR-0020) · Version 1.4 (step 1.4: Compose follow-ups applied and `seed.sh live` §1/§1.2, E2E suites and confirmed scenario outcomes §3) · Version 1.3 (steps 1.2 and 1.3 implemented; changes in §1.2, local stand-in images in §1.3, testbed in §3) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
+> Version 1.8 (Continue with Google, ADR-0026: callback alias router, per-IP limits, beta secret and egress — §1) · Version 1.7 (beta prep: §1.4 public beta on the Mac behind Cloudflare Tunnel) · Version 1.6 (step 2.4 integration: Stage 2 Compose wiring and findings §1.4, Stage 2 E2E §3) · Version 1.5 (step 2.1: console `/ops/*` routing and unused `/webhooks/kyb` route in §1, ADR-0020) · Version 1.4 (step 1.4: Compose follow-ups applied and `seed.sh live` §1/§1.2, E2E suites and confirmed scenario outcomes §3) · Version 1.3 (steps 1.2 and 1.3 implemented; changes in §1.2, local stand-in images in §1.3, testbed in §3) · Version 1.1 audited (`audits/platform.md`) · ADR-0015, ADR-0016 · Infrastructure §0 · Foundations `00-foundations.md`
 
 ## 1. `nearpay-deploy/compose` — the v1 stack
 
@@ -65,6 +65,7 @@ compose/
 | `api.…/v1/assets` | rails-api | authz (anonymous allowed) |
 | `pay.…`, `dashboard.…` `/api/*` | the API routers above (prefix stripped before ForwardAuth): the checkout and dashboard call the API same-origin, so the API has no CORS surface; unrouted `/api/*` answers 404 | authz |
 | `pay.…`, `js.…`, `dashboard.…`, `ops.…`, `docs.…` | static (nginx) | per-site headers: `frame-ancestors 'none'` (pay `/embed/*`: `https:` + local http), nosniff, referrer and permissions policies; js served with CORS + cross-origin CORP and `Cache-Control: public, max-age=300` (`/v1/` is the protocol major, not a release: the loader changes with releases, so it is never immutable); pay (`/` and `/embed/`) and dashboard `index.html` get a per-response CSP nonce — nginx `sub_filter` replaces `{{NP_CSP_NONCE}}` (pay) and `NPCSPNONCE` (dashboard) with the 128-bit `$request_id`, `sub_filter_once off` (NEAR Connect wallet frames need it; checkout §2, dashboard §1) |
+| `dashboard.…/api/auth/google/callback` (GET; ADR-0026: the redirect URI registered at Google) → path replaced with `/v1/auth/google/callback` (query kept); `…/v1/auth/google/start` (POST) and `…/v1/auth/google/callback` (GET) on every API host (priority 150/160) | identity-api | per-IP limit (`google-auth-ratelimit`: 2 rps, burst 10, keyed on `CF-Connecting-IP` behind Cloudflare) + authz (anonymous allowed) |
 | `api.…/healthz` | Traefik `ping@internal` (`OK`) | — |
 | `mail.…`, `merchant-demo.…` (local) | mailpit, merchant-demo | — |
 
@@ -181,3 +182,10 @@ fixtures/oneclick|near/     # recorded provider responses and mainnet receipts (
 ## 5. Stage mapping
 
 Stage 1: compose local profile, Postgres init, Traefik routes, seed script, testbed demos + E2E for checkout and agent, entry repo live steps. Stage 2–4: added services/routes. Stage 5: server profile, infra, backups, observability profile on server, Cloudflare.
+
+### Continue with Google in the beta (ADR-0026)
+- `compose.beta.yaml`: identity-api/worker get `NP_GOOGLE_CLIENT_ID` (`compose/env/beta.env`, owner value in `.secrets/beta/beta.env`) and the file secret `google_client_secret` (`.secrets/beta/google_client_secret`). `scripts/beta.sh` creates the file empty when absent, so Compose starts and identity runs with Google sign-in off; when set it checks the id/secret shapes, and `smoke` checks `GET /v1/auth/methods` reports the expected state. CI renders the overlay with an empty file.
+- Egress (identity, `compose/egress/allowlist.yaml`): `oauth2.googleapis.com:443` (code exchange), `www.googleapis.com:443` (JWKS).
+- Access logs must not keep query strings (`code`, `state` on the callback; single use and PKCE-bound, but still credentials for 10 minutes).
+- Owner steps (OAuth consent screen External, scopes `openid email profile`, redirect URI, JavaScript origin): `nearpay-deploy/docs/beta-launch.md` step 13a.
+

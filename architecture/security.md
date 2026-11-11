@@ -1,6 +1,6 @@
 # Security Architecture and Threat Model
 
-> Version 1.2 (T-10 residual risks from the AI vault audits 2026-11-08) · Version 1.1 (ADR-0020: AI-agent vault audits, merges by the lead agent, local screening, self-declared KYB — T-10, T-14, T-15 updated) · Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
+> Version 1.3 (ADR-0026: Continue with Google — T-17) · Version 1.2 (T-10 residual risks from the AI vault audits 2026-11-08) · Version 1.1 (ADR-0020: AI-agent vault audits, merges by the lead agent, local screening, self-declared KYB — T-10, T-14, T-15 updated) · Version 1.0 · Method: assets → trust boundaries → STRIDE per boundary → top threats with controls → residual risk. Re-run on every ADR touching money, keys or auth.
 
 ## 1. What we protect (ranked)
 
@@ -87,6 +87,7 @@ flowchart LR
 | **T-14** | Sanctioned funds through platform (compliance) | Pre-screening, post-screening, geo policy, KYB, case management. **v1 (ADR-0020):** screening uses the local OFAC list + blocklist only (no exposure/KYT screening); KYB is self-declared with an ops decision. **ADR-0024:** no ops decision — automatic approval unless the geo policy blocks the business country; abuse handled by suspension / reject after the fact | Medium (non-custodial cannot block in-flight; higher in v1 — sanctioned addresses only, unverified KYB) |
 | **T-15** | AI coding agent introduces unsafe change in money path (T) | CODEOWNERS: human review required for `**/money/**`, state machines, migrations, contracts, auth; invariant property tests in CI; protected branches; agents have no prod credentials; deploys via GitOps PR. **v1 (ADR-0020):** the lead agent reviews and merges money-path pull requests; CODEOWNERS paths require green invariant property, contract and stage E2E checks (never merged red or skipped); mainnet deployment and signing stay human; a human review of money-path diffs is recommended before material volume | Low; **Medium in v1** (no human review before merge) |
 | **T-16** | Relayer/gas account drained by spam (D) | Function-call allowance caps; per-merchant facilitator quotas; auto top-up with daily ceiling; alerting | Low |
+| **T-17** | Dashboard account takeover through Continue with Google (S, E) — ADR-0026 | Identity keyed on the Google `sub`, never on email; an existing email is never auto-linked (connect in Settings needs a passkey step-up); OIDC code flow with PKCE S256, `state`, `nonce`, single-use flow bound to an HttpOnly SameSite=Lax cookie; ID token verified against Google's JWKS (`iss`, `aud`, `exp`, `nonce`, `email_verified`); a Google session carries no step-up, so destinations, refunds, keys and team still need a passkey; adding a passkey needs a fresh step-up (or, for a Google-only user, a Google sign-in ≤ 10 min old); disconnect needs a passkey and ends other Google sessions; audit + events on link/unlink; per-IP limits | Low–Medium (a compromised Google account of a Google-only user can add a passkey within the window — same strength as that user's only factor) |
 
 ## 5. Application security baseline
 
