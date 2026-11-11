@@ -309,7 +309,7 @@ Mandates (step 4.1, `lld/billing.md` §14): a mandate exists only from the vault
 
 ### 4.6 SettlementDestination
 
-`pending_verification → cooling_off → active → disabled`. A destination is usable for new intents only when `active`. Disabling never affects intents already snapshotted.
+`pending_verification → [pending_approval →] active → disabled` (owner decision 2026-11-11, final, ADR-0027: active immediately after attestation/approval; `cooling_off` sits before `active` only when an operator configures a cool-off > 0). A destination is usable for new intents only when `active`. Disabling never affects intents already snapshotted.
 
 ## 5. Payment outcome matrix (FR-PAY-05)
 

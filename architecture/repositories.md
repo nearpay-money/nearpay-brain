@@ -177,7 +177,7 @@ nearpay-kit/
 
 ### nearpay-identity
 
-Accounts, users, roles, passkey sessions, API keys, settlement destinations with attestation and cool-off, gateway authorisation.
+Accounts, users, roles, passkey sessions, API keys, settlement destinations with attestation (active immediately; optional operator cool-off), gateway authorisation.
 
 ```
 nearpay-identity/

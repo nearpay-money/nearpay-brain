@@ -34,7 +34,7 @@ Legend: ✅ handled by the design as drafted · 🔧 design changed (finding) ·
 | A11 | Unknown provider status value | ✅ `held` + alert; never terminal |
 | A12 | Partial refund then second refund exceeding the remainder, concurrently | ✅ row lock + refundable formula |
 | A13 | Refund fees — who pays? | 🔧 F-04 `fee_mode`, no NearPay fee on refunds |
-| A14 | Merchant changes destination while sessions are open | ✅ snapshot per intent; cool-off |
+| A14 | Merchant changes destination while sessions are open | ✅ snapshot per intent (INV-6); no cool-off by default (ADR-0027) |
 | A15 | Stablecoin depegs during checkout | ✅ depeg guard disables par policy |
 | A16 | Fee charged differs from expected (1Click split/floor) | ✅ `fee_adjustment` statement line; fee schedule as data |
 
@@ -72,7 +72,7 @@ Legend: ✅ handled by the design as drafted · 🔧 design changed (finding) ·
 
 | # | Scenario | Result |
 |---|---|---|
-| D1 | Account takeover changes destination | ✅ passkey step-up, attestation, 2 approvers, cool-off, notifications |
+| D1 | Account takeover changes destination | ✅ passkey step-up, attestation, 2 approvers, screening, notifications (cool-off only if an operator sets one, ADR-0027) |
 | D2 | Malicious script on merchant page | ✅ iframe isolation; address never in merchant DOM |
 | D3 | Leaked `sk_live_` key | ✅ cannot touch destinations/team; scopes; secret scanning |
 | D4 | Webhook URL points at `169.254.169.254` | ✅ egress proxy blocks; DNS pinning |

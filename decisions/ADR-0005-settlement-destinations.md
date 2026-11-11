@@ -1,6 +1,6 @@
 # ADR-0005: Any-asset settlement destinations with attestation and cool-off
 
-- **Status:** Accepted · **Date:** 2026-11-05 · **Invariants:** INV-1, INV-6
+- **Status:** Accepted (cool-off amended by [ADR-0027](ADR-0027-payout-wallets-activate-immediately.md): owner decision 2026-11-11 (final) — payout wallets activate immediately after attestation/approval; no cool-off by default) · **Date:** 2026-11-05 · **Invariants:** INV-1, INV-6
 
 ## Context
 Merchants may settle in **any asset** (owner decision) on a destination chain or into their NEAR Intents account. In a non-custodial system the most valuable attack is changing where future payments go (account takeover, insider, compromised API key). Small payments to expensive chains are uneconomic. Bridged assets held in Intents accounts (`*.omft.near`) carry bridge risk.

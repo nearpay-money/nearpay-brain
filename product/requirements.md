@@ -29,7 +29,7 @@
 ### 2.2 Settlement destinations
 - **FR-SET-01** A destination is `{asset_id, type: chain_address | intents_account, chain, address}` for **any** supported asset.
 - **FR-SET-02** Ownership MUST be attested by a signature from the destination key (NEP-413, EIP-191, Solana `signMessage`, BIP-322) where the chain supports message signing; otherwise flagged `unverified` with lower limits and a warning.
-- **FR-SET-03** New/changed destinations MUST pass screening and a cool-off (default 24 h) before becoming usable; all owners are notified.
+- **FR-SET-03** New/changed destinations MUST pass screening (at creation and again at activation) before becoming usable; all owners are notified when one becomes active. Owner decision 2026-11-11 (final, ADR-0027): payout wallets activate immediately after attestation/approval; no cool-off by default (an operator may still configure one).
 - **FR-SET-04** Each destination exposes a computed `min_payment_amount` (destination network costs make tiny payments uneconomic).
 - **FR-SET-05** Destinations that need a memo/tag to credit the recipient are not supported in v1.
 

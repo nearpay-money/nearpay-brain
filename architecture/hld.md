@@ -17,7 +17,7 @@ NearPay is a non-custodial, chain-abstracted merchant payments platform. Merchan
 | D2 | **Correctness of money state** | Single owner per aggregate, Postgres as system of record, transactional outbox, versioned state machines, evidence-before-success (INV-2), daily reconciliation. |
 | D3 | **Dependency on a provider with no webhooks, no SLA, no testnet** | Route-provider abstraction (ADR-0003), hybrid tracking (deposit-signal polling + Explorer feed + own NEAR indexer + destination watchers with amount tags), independent on-chain verification (ADR-0012), sandbox rail for test mode (ADR-0007). |
 | D4 | **Any payer asset → any merchant asset** | Destination snapshot per intent; `EXACT_OUTPUT` quotes; token registry & pricing in `rails`; per-destination minimums. |
-| D5 | **Account-takeover = theft of future revenue** | Destination attestation + step-up + 2-person rule + cool-off + notifications (ADR-0005). |
+| D5 | **Account-takeover = theft of future revenue** | Destination attestation + step-up + 2-person rule + screening + notifications (ADR-0005; no cool-off by default since ADR-0027). |
 | D6 | **Agent payments must be ~instant and ~free** | Payer-signed NEAR Intents `transfer` executed by a batching relayer: ~1.2 s finality (ADR-0009). |
 | D7 | **Self-hosted on netcup** with small ops footprint | k3s on root servers, two EU sites + witness, few stateful components, GitOps, off-provider backups (ADR-0011). |
 | D8 | **AI-agent-built polyrepo** | Contract-first `nearpay-spec`, bounded-context repos, no source-level coupling, per-repo `AGENTS.md`, brain as single source of cross-cutting truth (ADR-0001). |
@@ -81,7 +81,7 @@ flowchart LR
 | [0002](../decisions/ADR-0002-non-custodial-near-intents.md) | Non-custodial settlement through NEAR Intents (1Click + Verifier) |
 | [0003](../decisions/ADR-0003-route-provider-abstraction.md) | Route-provider abstraction; 1Click first, sandbox second, direct-intents third |
 | [0004](../decisions/ADR-0004-postgres-outbox-nats.md) | Postgres per service as system of record; transactional outbox → NATS JetStream |
-| [0005](../decisions/ADR-0005-settlement-destinations.md) | Any-asset settlement destinations with ownership attestation and cool-off |
+| [0005](../decisions/ADR-0005-settlement-destinations.md) | Any-asset settlement destinations with ownership attestation and cool-off (cool-off amended by 0027) |
 | [0006](../decisions/ADR-0006-fees-via-appfees.md) | Revenue via in-flight `appFees`; fee schedule as data |
 | [0007](../decisions/ADR-0007-test-mode-sandbox.md) | Test mode backed by a deterministic sandbox rail (no Intents testnet) |
 | [0008](../decisions/ADR-0008-subscriptions.md) | Subscriptions: `send_invoice` everywhere; `auto_debit` via immutable NEAR vault |
@@ -97,6 +97,7 @@ flowchart LR
 | [0018](../decisions/ADR-0018-list-filters-not-search.md) | Typed filters on list endpoints instead of search endpoints |
 | [0019](../decisions/ADR-0019-site-repo.md) | One `nearpay-site` repo for the docs and marketing sites |
 | [0024](../decisions/ADR-0024-open-onboarding.md) | **Open onboarding (owner, 2026-11-10):** complete self-declared business details go live at once — automatic KYB decision (actor `system`), geo policy still blocks; registration number optional; suspension and reject-for-abuse stay; `NP_KYB_MODE=manual` restores the review |
+| [0027](../decisions/ADR-0027-payout-wallets-activate-immediately.md) | **Payout wallets activate immediately (owner, 2026-11-11, final):** attestation (or the last required approval) screens synchronously and makes the destination `active` in the same request; no cool-off by default (`NP_COOLOFF_SECONDS=0`; > 0 stays an operator option); amends ADR-0005 |
 | [0020](../decisions/ADR-0020-v1-delivery-and-vendor-scope.md) | **v1 by 2026-11-14:** stages exit on green test-mode E2E, one v1 mainnet demo; self-declared KYB + ops decision (no KYB vendor); local OFAC screening behind a vendor-neutral interface; ECB FX + keyless public crypto price feed; AI-agent vault audits (mainnet deploy human-signed); merges, incl. money paths, delegated to the lead agent |
 | [0021](../decisions/ADR-0021-shared-ui-package.md) | `@nearpay-internal/ui` (design system) is a versioned nearpay-kit package consumed by checkout, dashboard, console and site; CSS custom properties + plain CSS classes + thin React components, no runtime CSS-in-JS, CSP-safe, self-hosted DM Sans |
 | [0022](../decisions/ADR-0022-evm-l2-confirmations.md) | Payments confirm on ONE block of their own chain (owner, amended 2026-11-10 17:10): every EVM chain incl. Ethereum 1 block with a same-block-hash re-read, Solana `confirmed`, Bitcoin 1 confirmation for every amount, NEAR `final` (Doomslug); every one-block payment is re-checked at finality — EVM `finalized`, Solana `finalized`, Bitcoin 6 confirmations (alert, never reversed) |
@@ -197,7 +198,7 @@ The core question for a non-custodial design is *"who can move which funds?"*. T
 2. **Two-party release of deposit instructions:** the checkout SPA renders a deposit address only together with a **co-signature from `nearpay-sentinel`** (Ed25519 key pinned in the SPA build). Sentinel signs only after it independently (own code, own credentials) re-reads the quote from 1Click status by `depositAddress` and confirms `recipient`/`destinationAsset` match an **active destination in identity's registry** (read-only replica role) for that account, and amount/deadline match the attempt. Fail-closed; p99 budget 1.5 s (one provider status call; cached ≤ 50 ms).
 3. The checkout SPA is built and deployed by a separate pipeline (SRI, CSP) and shows the merchant's KYB-approved legal name (self-declared, ADR-0020; approved automatically on submission, ADR-0024 — shown as "declared by the merchant") and destination fingerprint.
 4. ⚠ Client-side verification of 1Click's own quote `signature` once the scheme is confirmed (SP-01).
-Remaining exposure requires compromising `identity` *and* bypassing its attestation/cool-off/notification controls — see `architecture/security.md` T-03.
+Remaining exposure requires compromising `identity` *and* bypassing its step-up/attestation/approval/notification controls — see `architecture/security.md` T-03.
 
 ## 7. Core flows (summary — full sequences in `architecture/flows.md`)
 
@@ -293,7 +294,7 @@ flowchart LR
 
 ## 14. Security (summary — `architecture/security.md`)
 
-Passkeys + step-up; hashed API keys with scopes; destination attestation and cool-off; checkout origin isolation (iframe, CSP, SRI, no third-party scripts except Turnstile and bundled wallet adapters); webhook HMAC + Ed25519 signatures; SSRF-safe egress proxy; OpenBao for secrets and PII encryption; signed images and SBOMs; hot keys are allowance-capped function-call keys; treasury is a hardware multisig; contracts immutable and audited (v1: independent AI-agent audits, human audit recommended before material value — ADR-0020); ops console behind Cloudflare Access with hardware keys; every admin action audited.
+Passkeys + step-up; hashed API keys with scopes; destination attestation (active immediately after attestation/approval, ADR-0027); checkout origin isolation (iframe, CSP, SRI, no third-party scripts except Turnstile and bundled wallet adapters); webhook HMAC + Ed25519 signatures; SSRF-safe egress proxy; OpenBao for secrets and PII encryption; signed images and SBOMs; hot keys are allowance-capped function-call keys; treasury is a hardware multisig; contracts immutable and audited (v1: independent AI-agent audits, human audit recommended before material value — ADR-0020); ops console behind Cloudflare Access with hardware keys; every admin action audited.
 
 ## 15. Deployment and infrastructure (summary — `architecture/infrastructure.md`)
 
