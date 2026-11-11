@@ -5,7 +5,7 @@
 ## 1. Scope
 
 **checkout** (static SPA, `pay.nearpay.<tld>`): hosted checkout `/c/:id`, embedded `/embed/:id`, payment links `/l/:id`, hosted invoices `/i/:id` (Stage 3); wallet connection; asset choice; deposit instructions; Intents-transfer signing; live status; sentinel verification.
-**js** (`js.nearpay.<tld>/v1/nearpay.js` + `@nearpay/js` + `@nearpay/react`): mounts the embedded checkout iframe and speaks the postMessage protocol.
+**js** (`js.nearpay.<tld>/v1/nearpay.js` + `@nearpay-money/js` + `@nearpay-money/react`): mounts the embedded checkout iframe and speaks the postMessage protocol.
 
 ## 2. Build and hosting
 
@@ -32,7 +32,7 @@ src/features/wallet-connect/    NEAR Connect, EVM (EIP-6963 injected + WalletCon
 src/features/deposit-instructions/  address, QR, memo, network guard, countdown, "I've sent it"
 src/features/refund-address/    validation per chain, exchange-address warning
 src/features/status-stream/     fetch-based SSE client (sends the client-secret header; `EventSource` cannot), polling fallback every 3 s
-src/lib/api/                    typed client from @nearpay/spec (public payer routes only)
+src/lib/api/                    typed client from @nearpay-money/spec (public payer routes only)
 src/lib/integrity/              sentinel verification (JCS + Ed25519), fingerprint rendering
 src/wallets/near|evm|solana/    tx builders
 ```
@@ -164,7 +164,7 @@ WCAG 2.2 AA; English in v1 with a flat message catalog using `{var}` placeholder
 
 ## 8. Tests
 
-Unit: vectors from `@nearpay/spec/test-vectors` (attestations, fingerprints, NEP-413/ERC-191 payloads), field-equality assertions, refund-address validators, amount formatting. Playwright in the repo against an in-process spec-validating mock (payer routes + sentinel signing with the test-vector key), with a CSP-violation guard on every test. Playwright (testbed, sandbox): every UI state, scenarios 00–07, embed origin mismatch, tampered attestation, expired address. Manual mainnet checklist per stage demo.
+Unit: vectors from `@nearpay-money/spec/test-vectors` (attestations, fingerprints, NEP-413/ERC-191 payloads), field-equality assertions, refund-address validators, amount formatting. Playwright in the repo against an in-process spec-validating mock (payer routes + sentinel signing with the test-vector key), with a CSP-violation guard on every test. Playwright (testbed, sandbox): every UI state, scenarios 00–07, embed origin mismatch, tampered attestation, expired address. Manual mainnet checklist per stage demo.
 
 ## 9. Stage mapping
 

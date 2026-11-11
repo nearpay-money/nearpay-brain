@@ -10,7 +10,7 @@ A repo boundary is worth its overhead only when it buys one of: **independent de
 |---|---|
 | One bounded context → one repo → one database | Teams/agents can change a service without coordinating schema changes. |
 | Contracts before code | `nearpay-spec` is the only place request/response/event/error shapes are defined; code is generated from it. |
-| Depend on artifacts, never on source | Repos consume `@nearpay/*` packages, images and charts at pinned versions. No git submodules, no cross-repo relative imports. |
+| Depend on artifacts, never on source | Repos consume `@nearpay-money/*` packages, images and charts at pinned versions. No git submodules, no cross-repo relative imports. |
 | Security-critical code gets its own repo | `nearpay-sentinel` (independent co-signer and auditor), `nearpay-contracts` (on-chain), `nearpay-checkout` (deposit-address display), `nearpay-deploy`/`nearpay-infra` (production access) each have distinct CODEOWNERS and credentials. |
 | Docs live in one place | `nearpay-brain` holds architecture, ADRs, flows, runbooks; repos hold only README + AGENTS.md pointing there. |
 | AI-agent friendly | Each repo is small enough to fit an agent's working context, builds and tests in isolation, and declares its rules in `AGENTS.md`. |
@@ -55,7 +55,7 @@ flowchart TB
 | Artifact | Naming | Registry |
 |---|---|---|
 | Service image | `ghcr.io/nearpay-money/<service>@sha256:…` | GHCR (+ Zot cache in-cluster) |
-| Public npm packages | `@nearpay/js`, `@nearpay/react`, `@nearpay/node`, `@nearpay/x402`, `@nearpay/mcp`, `@nearpay/agent-signer`, `@nearpay/cli`, `@nearpay/spec` | npm (⚠ scope availability: Q-BIZ-03) |
+| Public npm packages | `@nearpay-money/js`, `@nearpay-money/react`, `@nearpay-money/node`, `@nearpay-money/x402`, `@nearpay-money/mcp`, `@nearpay-money/agent-signer`, `@nearpay-money/cli`, `@nearpay-money/spec` | npm (⚠ scope availability: Q-BIZ-03) |
 | Internal npm packages | `@nearpay-internal/*` | GitHub Packages (private) |
 | Contracts | the owner-controlled vault account (decided at deploy, mainnet checklist A.4), one per version, immutable — not under `nearpay.near`, which NearPay does not control | NEAR mainnet |
 | Hosts | `api.`, `pay.`, `js.`, `dashboard.`, `ops.`, `docs.`, `status.` + apex `nearpay.money` | Cloudflare DNS |
@@ -67,7 +67,7 @@ flowchart TB
 |---|---|---|---|---|---|
 | 0 | `nearpay-brain` | Knowledge | docs | — | always |
 | 1 | `nearpay` | Entry | guide | github.com/nearpay-money/nearpay (hackathon projectUrl) | Stage 1 (step 1.1) |
-| 2 | `nearpay-spec` | Contracts & shared | spec | npm: @nearpay/spec (public), @nearpay-internal/spec (private) | Stage 1 (step 1.1) |
+| 2 | `nearpay-spec` | Contracts & shared | spec | npm: @nearpay-money/spec (public), @nearpay-internal/spec (private) | Stage 1 (step 1.1) |
 | 3 | `nearpay-kit` | Contracts & shared | library | npm (private): @nearpay-internal/{ids,money,chains,intents,db,bus,auth,http,service,testing} | Stage 1 (step 1.1) |
 | 4 | `nearpay-identity` | Services | service | image: ghcr.io/nearpay-money/identity · routes /v1/account, /v1/settlement_destinations, /v1/api_keys, /authz | Stage 1 (step 1.2) |
 | 5 | `nearpay-payments` | Services | service | image: ghcr.io/nearpay-money/payments · routes /v1/checkout, /v1/payment_intents, /v1/refunds, /v1/payment_links, /v1/customers, /v1/balance_transactions | Stage 1 (step 1.2) |
@@ -80,13 +80,13 @@ flowchart TB
 | 12 | `nearpay-sandbox` | Services | service | image: ghcr.io/nearpay-money/sandbox · internal only (test-mode rail) | Stage 1 (step 1.2) |
 | 13 | `nearpay-sentinel` | Services | service | image: ghcr.io/nearpay-money/sentinel · route /v1/attestations/deposit_instructions; separate credentials | Stage 1 (step 1.2) |
 | 14 | `nearpay-checkout` | Frontends | static SPA | pay.nearpay.money | Stage 1 (step 1.3) |
-| 15 | `nearpay-js` | Frontends | library + static | js.nearpay.money/v1/nearpay.js · npm: @nearpay/js, @nearpay/react | Stage 1 (step 1.3) |
+| 15 | `nearpay-js` | Frontends | library + static | js.nearpay.money/v1/nearpay.js · npm: @nearpay-money/js, @nearpay-money/react | Stage 1 (step 1.3) |
 | 16 | `nearpay-dashboard` | Frontends | static SPA | dashboard.nearpay.money | Stage 1 (step 1.3) |
 | 17 | `nearpay-console` | Frontends | static SPA (internal) | ops.nearpay.money behind Cloudflare Access | Stage 2 (step 2.3) |
 | 18 | `nearpay-site` | Frontends | static site | docs.nearpay.money (docs) + nearpay.money (marketing, legal) | Stage 2 (step 2.3) |
-| 19 | `nearpay-node` | SDKs & tools | library | npm: @nearpay/node | Stage 1 (step 1.3) |
-| 20 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay/x402, @nearpay/mcp, @nearpay/agent-signer | Stage 1 (step 1.3) |
-| 21 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay/cli + standalone binaries | Stage 3 (step 3.3) |
+| 19 | `nearpay-node` | SDKs & tools | library | npm: @nearpay-money/node | Stage 1 (step 1.3) |
+| 20 | `nearpay-agentkit` | SDKs & tools | library | npm: @nearpay-money/x402, @nearpay-money/mcp, @nearpay-money/agent-signer | Stage 1 (step 1.3) |
+| 21 | `nearpay-cli` | SDKs & tools | binary | npm: @nearpay-money/cli + standalone binaries | Stage 3 (step 3.3) |
 | 22 | `nearpay-contracts` | On-chain | Rust / NEAR | accounts: the owner-controlled vault account (decided at deploy, mainnet checklist A.4; immutable) | Stage 4 (step 4.1) |
 | 23 | `nearpay-infra` | Platform | IaC | netcup hosts, Cloudflare, GitHub org, object storage | Stage 5 (step 5.1) |
 | 24 | `nearpay-deploy` | Platform | GitOps | Argo CD source of truth | Stage 1 (step 1.1) |

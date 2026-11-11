@@ -24,7 +24,7 @@ A payment has exactly three jobs: **move value** from payer to merchant, **prove
 
 | Actor | Goal | Primary surface |
 |---|---|---|
-| **Merchant developer** | Integrate in < 1 hour; correct, idempotent, testable | API, `@nearpay/js`, `@nearpay/node`, docs, CLI |
+| **Merchant developer** | Integrate in < 1 hour; correct, idempotent, testable | API, `@nearpay-money/js`, `@nearpay-money/node`, docs, CLI |
 | **Merchant operator** (owner, finance, support) | See payments, refund, invoice, manage settlement, team | Dashboard |
 | **Payer** (human) | Pay with what they hold, from wallet or exchange, in one step | Hosted checkout / embedded widget / hosted invoice |
 | **Payer agent** (AI) | Pay per call/resource automatically within budget | x402 headers, MCP server, agent SDK |

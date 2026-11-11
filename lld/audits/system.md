@@ -19,13 +19,13 @@
 | S-02 | events | Low | `evt.payments.checkout_session.created`, `payment_attempt.updated`, `balance_transaction.created`, `payment_link.*`, `customer.*` had no consumer and no public mapping | Removed (objects readable via API) | payments §7 |
 | S-03 | routes | High | Anonymous routes were implied in several LLDs but identity had no explicit allow-list | Exhaustive v1 allow-list in identity config | identity §11 |
 | S-04 | scopes | High | Service scopes were checked by callees but never catalogued; callers could not be provisioned | Service scope catalogue | foundations §9 |
-| S-05 | trace | High | Agents paying checkout sessions trusted `pay_to` from the API without the two-party release humans get | Requirements carry an attestation ticket; `@nearpay/agent-signer` verifies sentinel before signing | agentpay §5, sdks §2 |
+| S-05 | trace | High | Agents paying checkout sessions trusted `pay_to` from the API without the two-party release humans get | Requirements carry an attestation ticket; `@nearpay-money/agent-signer` verifies sentinel before signing | agentpay §5, sdks §2 |
 | S-06 | trace | Medium | Stage 1 ops actions (KYB decision, kill-switch release) had no authenticated path before the console exists | In-container ops CLI via `docker compose exec` (local only), console in Stage 2 | platform §3 |
 | S-07 | routes | Low | Email-provider bounce webhook (Stage 5) had no route | Router to notify-api + anonymous allow-list entry | platform §1, identity §11 |
 | S-08 | budgets | Medium | Sentinel p99 400 ms was impossible with a live provider status call | p99 1.5 s (cached ≤ 50 ms); HLD, SLOs and risk R-17 aligned | sentinel §11, HLD §6, `operations/slos.md` |
 | S-09 | trace | Medium | Amount tags could leak when a quote failed after allocation | Tag released on any failure after allocation | rails §8.1 |
 | S-10 | scopes | Low | payments listed webhooks as a caller of `GET /internal/payment_intents/{id}` (webhooks never calls it) | Caller list corrected | payments §6.3 |
-| S-11 | platform | High | Polyrepo with no remote registry in Stages 1–4: services could not consume `@nearpay/*` packages as published artifacts (ADR-0001) | Local Verdaccio registry in the Compose local profile; GitHub Packages/npm once remotes exist | platform §1 |
+| S-11 | platform | High | Polyrepo with no remote registry in Stages 1–4: services could not consume `@nearpay-money/*` packages as published artifacts (ADR-0001) | Local Verdaccio registry in the Compose local profile; GitHub Packages/npm once remotes exist | platform §1 |
 | S-12 | scopes | Medium | Sandbox endpoints had no authentication statement | `sandbox.use` service scope required | sandbox §2 |
 
 Pass 2 re-ran checks 1–6 after the fixes: **no findings**.

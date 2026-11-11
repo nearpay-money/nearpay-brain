@@ -77,7 +77,7 @@ Retention: events, deliveries and attempts 30 days (daily purge).
 | `evt.identity.settlement_destination.{cooling_off,activated,disabled}` | `settlement_destination.{pending,activated,disabled}` | settlement_destination |
 | `evt.compliance.review.{opened,closed}` | `review.{opened,closed}` (step 2.1: routed to webhooks) | review — the bus `Review` is rendered with `toPublicReview()` into `PublicReview` at ingest (unix times; a review of a rails execution is shown as a review of its payment intent via `Review.payment_intent`; no `payment_intent` → no public event at all, acked without a dead letter; a payload that is not a bus `Review` → dead letter) |
 
-Everything else (attempt, execution, internal events) is never exposed. Rendering per endpoint `api_version` is done by version transformers in `@nearpay/spec` (`webhooks/versions/*.ts`). Since spec 0.1.5 CheckoutSession and AgentPayment carry their own `sequence` too (payments and agentpay send their aggregate version). The producer's `sequence` is preferred: ingest stores it as `object_sequence` and rendering keeps it; only an object without a valid one (a producer older than 0.1.5) gets `aggregate.version` (api-conventions §9).
+Everything else (attempt, execution, internal events) is never exposed. Rendering per endpoint `api_version` is done by version transformers in `@nearpay-money/spec` (`webhooks/versions/*.ts`). Since spec 0.1.5 CheckoutSession and AgentPayment carry their own `sequence` too (payments and agentpay send their aggregate version). The producer's `sequence` is preferred: ingest stores it as `object_sequence` and rendering keeps it; only an object without a valid one (a producer older than 0.1.5) gets `aggregate.version` (api-conventions §9).
 
 ## 5. API
 
@@ -169,7 +169,7 @@ All deliveries use the `egress-proxy` container (Smokescreen): deny RFC 1918, lo
 
 ## 11. Tests
 
-Signature vectors shared with `@nearpay/node` verify helper; property tests (step 2.2): rotation window (a delivery verifies under exactly the current secret plus the previous one strictly before its expiry, at every instant, over random rotation sequences) and resend allocation (no `(event, endpoint, resend_no)` twice; contiguous numbers); retry schedule; abandonment at 72 h (fake clock); endpoint disable; SSRF table (each blocked range); version rendering; ingest idempotency on duplicate domain events.
+Signature vectors shared with `@nearpay-money/node` verify helper; property tests (step 2.2): rotation window (a delivery verifies under exactly the current secret plus the previous one strictly before its expiry, at every instant, over random rotation sequences) and resend allocation (no `(event, endpoint, resend_no)` twice; contiguous numbers); retry schedule; abandonment at 72 h (fake clock); endpoint disable; SSRF table (each blocked range); version rendering; ingest idempotency on duplicate domain events.
 
 ## 12. Stage mapping
 
