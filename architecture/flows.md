@@ -27,9 +27,9 @@ sequenceDiagram
   D->>W: signMessage (NEP-413 / EIP-191 / Solana / BIP-322)
   W-->>D: signature
   D->>ID: submit attestation
-  ID->>ID: verify signature, status = cooling_off (24 h), second approver if required
+  ID->>ID: verify signature, second approver if required, re-screen, status = active (no cool-off, ADR-0027)
   ID-->>M: email + dashboard notice to all owners
-  Note over ID: after cool-off: status = active, evt identity.settlement_destination.activated
+  Note over ID: same request: evt identity.settlement_destination.activated (cooling_off only if an operator sets a cool-off)
   ID-->>ID: live_enabled when KYB approved and >= 1 active destination
 ```
 

@@ -65,7 +65,7 @@ A payment has exactly three jobs: **move value** from payer to merchant, **prove
 ## 6. Differentiation (vs. PingPay and custodial gateways)
 
 1. **Provably non-custodial** — no NearPay key can move user funds; hot keys are NEAR function-call keys that can only *submit already-signed* intents.
-2. **Any-asset settlement**, chosen per merchant, with ownership attestation and change cool-off (anti-takeover).
+2. **Any-asset settlement**, chosen per merchant, with ownership attestation, step-up and two-person approval (anti-takeover); active immediately once verified (ADR-0027).
 3. **Independent settlement verification** — a payment is `succeeded` only with on-chain evidence, not just a provider status.
 4. **Stripe-grade DX** — idempotency on every POST, test mode with a deterministic sandbox (NEAR Intents has no testnet), signed webhooks with replay, CLI.
 5. **Instant agent payments** — signed NEAR-Intents transfers settle in ~1.2 s (NEAR finality) with near-zero fees, not a cross-chain deposit per call.
