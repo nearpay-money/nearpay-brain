@@ -17,6 +17,8 @@ Several `security` reasons can come from causes that are not tampering:
 
 A false positive is very costly (every merchant stops until a two-person release). Refusing the payment is enough to protect money: checkout never shows an address that has no signature.
 
+**Root cause (confirmed 2026-11-12):** the refusal was "R4 deposit chain differs" on a genuine BNB Smart Chain deposit. 1Click had started naming tokens with a new bridge suffix (`nep141:bnb-0x….omdep.near`). Sentinel read the id as a NEAR token. It was a false positive caused by a provider naming change, and it was fixed at the root with a platform-wide asset-id parser (spec 0.5.2 `parseAssetId`; `lld/sentinel.md` §18).
+
 ## Decision
 1. **No automatic global stop from a single payment's check.** A `security` refusal always refuses that payment (409, as before). On an address rails confirms NearPay issued, it is recorded in `integrity_breaches` with full detail and counted in `integrity_refusals_total{livemode,evidence,rule,address}`.
 2. **Evidence decides the reaction.** *Pipeline* evidence is a field rails put into the quote, or the provider signed or echoed, that disagrees with NearPay's configuration, identity's registry or the deposit sentinel asked about: R2, R3, R4 (deposit address, memo, address lifetime, address shape), R5, R6. A payer cannot produce it. *Request* evidence covers only fields the caller supplied: R4 origin asset, amount, chain and deadline, and every `intents_transfer` requirement field. Request evidence is refused, recorded and rate-limited per IP, and it **never** quarantines or counts toward the global stop.
