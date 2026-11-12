@@ -44,7 +44,7 @@ Pass 2 re-ran checks 1–6 after the fixes: **no findings**.
 
 **T6 — Test mode end to end:** `sk_test_` session → rails sandbox provider (rails §12 assertions) → sandbox quote/status (sandbox §3–§4) → sentinel sandbox verification (sentinel §9) → SPA "Simulate payment" (payments `simulate_deposit`) → sandbox timeline → rails sandbox feed/verifier → payments → webhooks. Scenarios 00–07 map to the outcome matrix (domain-model §5). ✔
 
-**T7 — Kill switch:** genuine integrity mismatch (rails confirms issued address) → sentinel engages (sentinel §8) → `evt.sentinel.kill_switch.engaged` → rails `control_flags` (rails §7) and agentpay live x402 settles and live checkout relays paused (agentpay §8) → notify → ops CLI release (Stage 1). A merchant disabling a destination mid-checkout yields `stale`, never the switch (sentinel R5). Spoofed request → refused only (L-SN-01). ✔
+**T7 — Kill switch:** genuine integrity mismatch (rails confirms issued address) → that merchant quarantined; corroborated mismatches across merchants (≥ 3 across ≥ 2 within 15 min, ADR-0028) → sentinel engages (sentinel §5 "Containment", §8) → `evt.sentinel.kill_switch.engaged` → rails `control_flags` (rails §7) and agentpay live x402 settles and live checkout relays paused (agentpay §8) → notify → ops CLI release (Stage 1). A merchant disabling a destination mid-checkout yields `stale`, never the switch (sentinel R5). Spoofed request → refused only (L-SN-01). ✔
 
 ## 4. Latency budget chains
 
