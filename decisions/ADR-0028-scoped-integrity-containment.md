@@ -4,7 +4,7 @@
 - **Date:** 2026-11-12
 - **Deciders:** Owner (directive 2026-11-12: "The service should never stop"); Principal Engineer (lead agent, implementation)
 - **Invariants touched:** none weakened (INV-1 non-custody, INV-2 evidence before success, INV-8 livemode hold; every refusal still means no deposit address is shown)
-- **Amended:** 2026-11-12 (resilience audit: R2-only and drift reclassification, quarantine hygiene on release; see "Amendment 2026-11-12")
+- **Amended:** 2026-11-12 (resilience audit: R2-only and drift reclassification, quarantine hygiene on release; see "Amendment 2026-11-12"); 2026-11-13 (owner decision: stale automatic stops self-release; see "Amendment 2026-11-13")
 - **Amends:** L-SN-01 (`lld/audits/sentinel.md`) and `lld/sentinel.md` §5 "Classes and reactions"; `architecture/security.md` §6 "Sentinel refuses to co-sign"; runbook RB-03
 
 ## Context
@@ -59,6 +59,21 @@ Consequences of the amendment:
 - ➕ A provider format change or a deploy skew costs refused payments until it is fixed, never a platform-wide stop plus lingering quarantines; after a release, the merchants a stop paused resume with everyone else.
 - ➖ A real compromise that only shows as a drift-eligible refusal on every merchant (for example a rails compromise that adds a third fee entry or lowers the treasury's share within 500 bps) is refused on every payment but does not engage the global switch automatically. Every such payment shows no address; the drift alert pages; ops engage the switch with one action if they judge it tampering.
 - ➖ The first one or two refusals of a drift are contained like any breach until the pattern shows; their quarantines are lifted when it does.
+
+## Amendment 2026-11-13 (owner decision: stale automatic stops self-release)
+
+**Owner decision 2026-11-13: stale automatic stops self-release. Operator stops and corroborated systemic stops still need an operator release, with the wait unchanged.**
+
+Context: the 2026-11-11 stop (actor `sentinel`, "integrity breach on 0x11D278921A31AB448c7e27F33c2313C130B05036: R4 deposit chain differs", 18:58:29 UTC) was engaged by the single-payment rule this ADR removed, for a provider naming change fixed at the root (spec 0.5.2). Under the current rules it would never have stopped the platform, yet it stayed engaged until an operator release. The owner was offered three options on 2026-11-13 (01:08 IST): (1) automatic release of stale automatic stops, (2) passkey-only single-operator release, (3) CLI release in the server environment. He chose option 1 only. Options 2 and 3 are not approved: the two-person / single-operator release (5-minute wait, a reason of at least 20 characters) and the CLI's `two_person_required` refusal on the server stage are unchanged.
+
+12. **Stale automatic stops release themselves.** On boot and every `NP_KILL_SWITCH_AUTO_RELEASE_TICK_S` (60 s) sentinel-auditor looks at the global switch. It releases it when — and only when — sentinel engaged it (actor `sentinel`) and its recorded reason and evidence would not engage it under the current rules (this ADR and amendment 2026-11-12): a single payment's check (request-evidence fields, the `.omdep.near` misparse class, any other single breach), a systemic stop whose window is drift-classified, R2-only echo drift or request evidence, counted unknown (null) accounts as merchants, or is otherwise no longer corroborated. The release takes the normal path in one transaction (under the corroboration advisory lock, switch row locked): version + 1, `kill_switch_log` row with actor `sentinel` and reason "auto-released: <old reason> — no longer platform evidence under ADR-0028", outbox `evt.sentinel.kill_switch.released`, and the quarantine cleanup every release does (decision 11). It logs an INFO line and the plain-words line "ALERT Payments were paused by an automatic check that turned out to be a false alarm. They have been switched back on automatically." and counts `nearpay_sentinel_kill_switch_auto_released_total{reason_class}` (`omdep_misparse`, `request_evidence`, `drift`, `single_breach`, `null_account`, `uncorroborated`).
+13. **Never released automatically:** an engagement by an operator (any actor other than `sentinel`); an engagement that still meets the corroborated-systemic rule; a stale stop during which corroborated systemic evidence arrived (the rule cannot engage an engaged switch again, so each later breach re-evaluates its window); an engagement whose evidence cannot be loaded or judged (an unknown reason, a systemic stop with nothing of its window on record, a database error) — fail safe: it stays engaged, `KillSwitchEngaged` keeps firing and sentinel logs `ALERT … kill_switch_auto_release_held|failed`.
+14. **Flap guard.** New genuine corroborated evidence after a release engages the switch again as normal. When sentinel has engaged the switch again right after one of its automatic releases more than `NP_KILL_SWITCH_AUTO_RELEASE_MAX_REENGAGEMENTS` (3) times within one hour, it stops releasing automatically and pages; an operator releases.
+15. **`kill-switch-release-status`** says when an automatic release is expected (by the next check) or why it will not happen.
+
+Consequences of the amendment:
+- ➕ A false alarm from a rule that no longer exists (or from evidence the current rules reclassify) costs at most one check period instead of an operator release.
+- ➖ An operator who wants to keep a stale automatic stop engaged cannot do so by pressing engage (engaging an engaged switch is a no-op and keeps actor `sentinel`); they must release it and engage it again, or rely on the flap guard. Revisit if that matters in practice.
 
 ## Revisit when
 A real cross-merchant compromise is missed or seen late, the beta volume makes ≥ 3 refusals / 15 min noisy, or the registry moves to a replica with structural lag (tune `NP_REGISTRY_MAX_LAG_S`).
